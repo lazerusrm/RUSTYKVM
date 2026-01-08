@@ -125,6 +125,29 @@
             margin-bottom: 1rem;
         }
         .download-link:hover { text-decoration: underline; }
+        .footer {
+            margin-top: 1.5rem;
+            text-align: center;
+            font-size: 0.75rem;
+            color: #666;
+        }
+        .sd-health {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            background: #1a1a2e;
+        }
+        .sd-health-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+        .sd-health-text {
+            font-size: 0.7rem;
+            color: #888;
+        }
     </style>
 </head>
 <body>
@@ -196,6 +219,13 @@
             <div class="recovery-codes" id="recovery-codes"></div>
             <a href="#" id="btn-download-new-recovery" class="download-link">📄 Download</a>
             <button class="btn btn-primary" id="btn-saved-codes">I've Saved My Codes</button>
+        </div>
+
+        <div class="footer">
+            <div id="sd-health" class="sd-health" style="display: none;">
+                <div id="sd-health-dot" class="sd-health-dot"></div>
+                <span id="sd-health-text" class="sd-health-text">SD: --</span>
+            </div>
         </div>
     </div>
 

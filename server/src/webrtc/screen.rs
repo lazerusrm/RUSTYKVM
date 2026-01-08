@@ -43,6 +43,7 @@ pub struct StopFrameDetectReq {
 
 const FRAME_DETECT_INTERVAL: u8 = 60;
 
+#[cfg(target_os = "linux")]
 pub async fn update_frame_detect_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpdateFrameDetectReq>,
@@ -52,13 +53,14 @@ pub async fn update_frame_detect_handler(
     StatusCode::OK
 }
 
+#[cfg(target_os = "linux")]
 pub async fn stop_frame_detect_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<StopFrameDetectReq>,
 ) -> impl IntoResponse {
     let duration = req.duration.unwrap_or(10);
     let kvm = state.kvm.clone();
-    
+
     tokio::spawn(async move {
         kvm.set_frame_detect(0);
         tokio::time::sleep(std::time::Duration::from_secs(duration)).await;

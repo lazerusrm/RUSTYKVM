@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tracing::{debug, error, info};
+use tracing::info;
 use thiserror::Error;
 use walkdir::WalkDir;
+
+pub mod health;
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -41,16 +43,22 @@ impl StorageManager {
     }
 
     pub async fn mount_image(file_path: Option<&str>, cdrom: bool) -> Result<(), StorageError> {
-        // Unmount first
-        fs::write(MOUNT_DEVICE, b"\n").await?;
+        // Unmount first by writing empty to UDC or clearing file
+        // Writing a newline to MOUNT_DEVICE might be enough to detach the file
+        let _ = fs::write(MOUNT_DEVICE, b"\n").await;
 
-        let flag = if file_path.is_some() && cdrom { b"1" } else { b"0" };
+        let is_none = file_path.is_none() || file_path == Some(IMAGE_NONE);
         
-        fs::write(RO_FLAG, flag).await?;
-        fs::write(CDROM_FLAG, flag).await?;
+        // CDROM mode is always read-only. Mass storage can be RO or RW.
+        // For now, we follow the cdrom flag for RO.
+        let ro_val = if cdrom || is_none { b"1" } else { b"0" };
+        let cdrom_val = if cdrom { b"1" } else { b"0" };
+        
+        fs::write(RO_FLAG, ro_val).await?;
+        fs::write(CDROM_FLAG, cdrom_val).await?;
 
         let inquiry_ven = "NanoKVM";
-        let inquiry_prd = if cdrom { "USB CD/DVD-ROM" } else { "USB Mass Storage" };
+        let inquiry_prd = if cdrom { "USB CD/DVD-ROM" } else { "USB Disk" };
         let inquiry_ver = "0520";
         let inquiry_data = format!("{:<8}{:<16}{}", inquiry_ven, inquiry_prd, inquiry_ver);
 
@@ -59,10 +67,10 @@ impl StorageManager {
         let image = file_path.unwrap_or(IMAGE_NONE);
         fs::write(MOUNT_DEVICE, image.as_bytes()).await?;
 
-        // Reset USB Gadget
+        // Reset USB Gadget to ensure host re-enumerates
         Self::reset_usb_gadget().await?;
 
-        info!("Mounted image: {}", image);
+        info!("Mounted image: {} (cdrom: {})", image, cdrom);
         Ok(())
     }
 

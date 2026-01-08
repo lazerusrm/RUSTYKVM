@@ -6,6 +6,9 @@ RUN apt update && apt install -y \
     wget \
     curl \
     git \
+    cmake \
+    pkg-config \
+    libssl-dev \
     build-essential \
     gcc-riscv64-linux-gnu \
     g++-riscv64-linux-gnu \
@@ -17,8 +20,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Install RISC-V target for Rust
-# We start with gnu. If this fails linking against the provided .so files (which likely use musl),
-# we will need to switch to a musl target or use 'cross'.
 RUN rustup target add riscv64gc-unknown-linux-gnu
 
 WORKDIR /app
@@ -27,8 +28,14 @@ WORKDIR /app
 COPY . .
 
 # Set up the library search path for the proprietary libs
-# The linker needs to find libkvm.so and friends.
 ENV RUSTFLAGS="-C linker=riscv64-linux-gnu-gcc -L /app/NanoKVM/server/dl_lib"
+# Both dash and underscore variants for CC/CXX to be safe
+ENV CC_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-gcc
+ENV CXX_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-g++
+ENV CC_riscv64gc-unknown-linux-gnu=riscv64-linux-gnu-gcc
+ENV CXX_riscv64gc-unknown-linux-gnu=riscv64-linux-gnu-g++
+ENV PKG_CONFIG_ALLOW_CROSS=1
+ENV OPENSSL_STATIC=1
 
 # Switch to the Rust workspace directory
 WORKDIR /app/nanokvm-rs

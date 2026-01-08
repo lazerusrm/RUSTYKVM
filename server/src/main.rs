@@ -9,6 +9,7 @@ mod utils;
 mod download;
 mod hid;
 mod webrtc;
+mod storage_health;
 
 use axum::{
     extract::{State, WebSocketUpgrade, ws::{WebSocket, Message}, Path},
@@ -18,7 +19,7 @@ use axum::{
     Json,
     middleware,
 };
-use axum::http::{header, StatusCode};
+use axum::http::{header, StatusCode, Method};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 use tracing::{info, warn, error, debug};
@@ -28,12 +29,16 @@ use bytes::Bytes;
 use std::time::Duration;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{CorsLayer, AllowOrigin};
 use tower_http::compression::CompressionLayer;
 use crate::webrtc::transport::{PeerConnectionManager, WebRtcConfig, WhepEndpoint, WhepRequest, IceCandidate, SharedPacket};
 use crate::webrtc::ws_signaling::h264_ws_handler;
+use crate::webrtc::H264Frame;
+use crate::download::*;
+
+#[cfg(target_os = "linux")]
 use crate::webrtc::screen::{update_frame_detect_handler, stop_frame_detect_handler};
-use crate::webrtc::{VideoFrame, FrameType, H264Frame};
+
 #[cfg(target_os = "linux")]
 use crate::vm::{
     set_gpio_handler, get_gpio_handler, get_jiggler_handler, set_jiggler_handler, 
@@ -54,6 +59,7 @@ use crate::vm::{
 #[cfg(not(target_os = "linux"))]
 use crate::vm::{get_info_handler, get_oled_handler, set_oled_handler, terminal_handler, get_scripts_handler, upload_script_handler, run_script_handler, delete_script_handler};
 use crate::storage::{get_images_handler, mount_image_handler, get_mounted_image_handler, get_cdrom_handler, delete_image_handler};
+use crate::storage_health::{health_status_handler, health_handler, detailed_health_handler, refresh_health_handler, HealthState};
 use crate::auth::{login_handler, logout_handler, auth_middleware, change_password_handler, is_password_updated_handler, get_account_handler};
 use crate::network::{wol_handler, get_wol_macs_handler, set_wol_name_handler, delete_wol_mac_handler, get_wifi_handler, connect_wifi_handler, disconnect_wifi_handler};
 use crate::tailscale::{tailscale_start_handler, tailscale_stop_handler, tailscale_status_handler, tailscale_login_handler, tailscale_up_handler, tailscale_down_handler, tailscale_logout_handler, tailscale_install_handler, tailscale_uninstall_handler};
@@ -65,30 +71,32 @@ use std::net::SocketAddr;
 
 // Shared application state
 #[cfg(target_os = "linux")]
-struct AppState {
+pub struct AppState {
     config: Arc<Config>,
     screen_config: crate::webrtc::screen::SharedScreenConfig,
     tx_mjpeg: broadcast::Sender<Bytes>,
     tx_h264: broadcast::Sender<H264Frame>,
     tx_audio: broadcast::Sender<Bytes>,
-    hid: Arc<Mutex<hid::HidEngine>>,
+    hid: Arc<Mutex<::hid::HidEngine>>,
     webrtc: Arc<PeerConnectionManager>,
     whep: Arc<WhepEndpoint>,
-    vm: Arc<vm::gpio::VmController>,
-    jiggler: Arc<vm::jiggler::MouseJiggler>,
-    kvm: Arc<kvm::Kvm>,
+    vm: Arc<::vm::gpio::VmController>,
+    jiggler: Arc<::vm::jiggler::MouseJiggler>,
+    kvm: Arc<::kvm::Kvm>,
+    health_state: Arc<HealthState>,
 }
 
 #[cfg(not(target_os = "linux"))]
-struct AppState {
+pub struct AppState {
     config: Arc<Config>,
     screen_config: crate::webrtc::screen::SharedScreenConfig,
     tx_mjpeg: broadcast::Sender<Bytes>,
     tx_h264: broadcast::Sender<H264Frame>,
     tx_audio: broadcast::Sender<Bytes>,
-    hid: Arc<Mutex<hid::HidEngine>>,
+    hid: Arc<Mutex<::hid::HidEngine>>,
     webrtc: Arc<PeerConnectionManager>,
     whep: Arc<WhepEndpoint>,
+    health_state: Arc<HealthState>,
 }
 
 #[tokio::main]
@@ -105,16 +113,16 @@ async fn main() {
     // 3. Initialize Hardware & Loops
     #[cfg(target_os = "linux")]
     let (kvm_handle, hid_engine, vm_controller, mouse_jiggler) = {
-        let kvm = Arc::new(kvm::Kvm::init());
-        let hid = Arc::new(Mutex::new(hid::HidEngine::new().await));
-        let vm = Arc::new(vm::gpio::VmController::new().await);
-        let jiggler = Arc::new(vm::jiggler::MouseJiggler::new(hid.clone()));
+        let kvm = Arc::new(::kvm::Kvm::init());
+        let hid = Arc::new(Mutex::new(::hid::HidEngine::new().await));
+        let vm = Arc::new(::vm::gpio::VmController::new().await);
+        let jiggler = Arc::new(::vm::jiggler::MouseJiggler::new(hid.clone()));
         jiggler.spawn_loop().await;
         (kvm, hid, vm, jiggler)
     };
 
     #[cfg(not(target_os = "linux"))]
-    let hid_engine = Arc::new(Mutex::new(hid::HidEngine::new().await));
+    let hid_engine = Arc::new(Mutex::new(::hid::HidEngine::new().await));
 
     // Create Broadcast Channels
     let (tx_mjpeg, _rx) = broadcast::channel::<Bytes>(16);
@@ -133,9 +141,13 @@ async fn main() {
             config.turn.turn_cred.clone(),
         );
     }
-    let webrtc_config = webrtc_config_builder.build().expect("Failed to build WebRTC config");
-    
-    let webrtc_manager = Arc::new(PeerConnectionManager::new(webrtc_config).await.expect("Failed to init WebRTC"));
+    let webrtc_config = webrtc_config_builder.build()
+        .expect("Failed to build WebRTC config - verify STUN/TURN server settings in configuration file and ensure they are properly formatted");
+
+    let webrtc_manager = Arc::new(
+        PeerConnectionManager::new(webrtc_config).await
+            .expect("Failed to initialize WebRTC peer connection manager - check network configuration, firewall settings, and ICE server connectivity")
+    );
     let whep_endpoint = Arc::new(WhepEndpoint::new(webrtc_manager.clone()));
 
     #[cfg(target_os = "linux")]
@@ -151,6 +163,7 @@ async fn main() {
         vm: vm_controller.clone(),
         jiggler: mouse_jiggler.clone(),
         kvm: kvm_handle.clone(),
+        health_state: Arc::new(HealthState::default()),
     });
 
     #[cfg(not(target_os = "linux"))]
@@ -163,7 +176,18 @@ async fn main() {
         hid: hid_engine.clone(),
         webrtc: webrtc_manager.clone(),
         whep: whep_endpoint.clone(),
+        health_state: Arc::new(HealthState::default()),
     });
+
+    // Initialize storage health check on boot (non-blocking)
+    {
+        let health_state = shared_state.health_state.clone();
+        tokio::spawn(async move {
+            let health = ::storage::health::check_health_with_logging().await;
+            let mut cached = health_state.cached_health.lock().await;
+            *cached = Some(health);
+        });
+    }
 
     // Spawn Producer Tasks (Linux Only)
     #[cfg(target_os = "linux")]
@@ -174,6 +198,17 @@ async fn main() {
         tokio::spawn(async move { h264_hardware_loop(s2).await; });
         let s3 = shared_state.clone();
         tokio::spawn(async move { audio_hardware_loop(s3).await; });
+
+        // Periodic storage health check every 24 hours
+        let health_state = shared_state.health_state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_hours(24)).await;
+                let health = ::storage::health::check_health_with_logging().await;
+                let mut cached = health_state.cached_health.lock().await;
+                *cached = Some(health);
+            }
+        });
     }
 
     let web_path = "web";
@@ -184,8 +219,6 @@ async fn main() {
         .route("/application/update", post(update_handler))
         .route("/application/update/offline", post(offline_update_handler))
         .route("/application/preview", get(get_preview_handler).post(set_preview_handler))
-        .route("/stream/mjpeg/detect", post(update_frame_detect_handler))
-        .route("/stream/mjpeg/detect/stop", post(stop_frame_detect_handler))
         .route("/download/image/enabled", get(image_enabled_handler))
         .route("/download/image/status", get(status_image_handler))
         .route("/download/image/file", post(upload_image_handler))
@@ -206,6 +239,9 @@ async fn main() {
         .route("/storage/mount", post(mount_image_handler))
         .route("/storage/mounted", get(get_mounted_image_handler))
         .route("/storage/cdrom", get(get_cdrom_handler))
+        .route("/storage/health/status", get(health_status_handler))
+        .route("/storage/health", get(health_handler).post(refresh_health_handler))
+        .route("/storage/health/detailed", get(detailed_health_handler))
         .route("/hid/paste", post(paste_handler))
         .route("/hid/shortcuts", get(get_shortcuts_handler))
         .route("/hid/shortcut", post(add_shortcut_handler).delete(delete_shortcut_handler))
@@ -215,6 +251,13 @@ async fn main() {
         .route("/network/wol/name", post(set_wol_name_handler))
         .route("/network/wifi", get(get_wifi_handler).post(connect_wifi_handler).delete(disconnect_wifi_handler))
         .route("/ws", get(ws_handler));
+
+    #[cfg(target_os = "linux")]
+    {
+        api_routes = api_routes
+            .route("/stream/mjpeg/detect", post(update_frame_detect_handler))
+            .route("/stream/mjpeg/detect/stop", post(stop_frame_detect_handler));
+    }
 
     #[cfg(target_os = "linux")]
     {
@@ -266,17 +309,51 @@ async fn main() {
         .nest("/api", api_routes)
         .nest_service("/", ServeDir::new(web_path))
         .layer(CompressionLayer::new())
-        .layer(CorsLayer::permissive())
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::predicate(|origin, _req_head| {
+                    // Allow same-origin requests and localhost (development)
+                    if let Ok(origin_str) = origin.to_str() {
+                        origin_str.starts_with("http://localhost") ||
+                        origin_str.starts_with("http://127.0.0.1") ||
+                        origin_str.starts_with("https://localhost") ||
+                        origin_str.starts_with("https://127.0.0.1")
+                    } else {
+                        false
+                    }
+                }))
+                .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+                .max_age(Duration::from_secs(3600))
+        )
         .layer(SetResponseHeaderLayer::if_not_present(header::X_FRAME_OPTIONS, header::HeaderValue::from_static("DENY")))
         .layer(SetResponseHeaderLayer::if_not_present(header::X_CONTENT_TYPE_OPTIONS, header::HeaderValue::from_static("nosniff")))
         .with_state(shared_state);
 
     // 5. Start Server
     if config.proto == "https" {
-        let https_addr: SocketAddr = format!("0.0.0.0:{}", config.port.https).parse().unwrap();
-        let http_addr: SocketAddr = format!("0.0.0.0:{}", config.port.http).parse().unwrap();
+        let https_addr: SocketAddr = match format!("0.0.0.0:{}", config.port.https).parse() {
+            Ok(addr) => addr,
+            Err(e) => {
+                error!("Failed to parse HTTPS socket address with port {}: {}", config.port.https, e);
+                std::process::exit(1);
+            }
+        };
+        let http_addr: SocketAddr = match format!("0.0.0.0:{}", config.port.http).parse() {
+            Ok(addr) => addr,
+            Err(e) => {
+                error!("Failed to parse HTTP socket address with port {}: {}", config.port.http, e);
+                std::process::exit(1);
+            }
+        };
 
-        let tls_config = RustlsConfig::from_pem_file(&config.cert.crt, &config.cert.key).await.expect("Failed to load TLS certificates");
+        let tls_config = RustlsConfig::from_pem_file(&config.cert.crt, &config.cert.key)
+            .await
+            .expect(&format!(
+                "Failed to load TLS certificates from cert='{}' key='{}'",
+                config.cert.crt,
+                config.cert.key
+            ));
 
         let redirect_app = Router::new().fallback(move |host: axum::http::HeaderMap, uri: axum::http::Uri| async move {
             let host = host.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("localhost");
@@ -286,17 +363,23 @@ async fn main() {
 
         info!("Starting HTTP redirector on {}", http_addr);
         tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(&http_addr).await.unwrap();
-            axum::serve(listener, redirect_app).await.unwrap();
+            let listener = tokio::net::TcpListener::bind(&http_addr).await
+                .expect(&format!("Failed to bind HTTP listener to {}", http_addr));
+            axum::serve(listener, redirect_app).await
+                .expect("HTTP redirect server failed");
         });
 
         info!("Server listening on {} (HTTPS)", https_addr);
-        axum_server::bind_rustls(https_addr, tls_config).serve(app.into_make_service()).await.unwrap();
+        axum_server::bind_rustls(https_addr, tls_config)
+            .serve(app.into_make_service()).await
+            .expect(&format!("Failed to start HTTPS server on {}", https_addr));
     } else {
         let http_addr = format!("0.0.0.0:{}", config.port.http);
-        let listener = tokio::net::TcpListener::bind(&http_addr).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(&http_addr).await
+            .expect(&format!("Failed to bind HTTP listener to {}", http_addr));
         info!("Server listening on {} (HTTP)", http_addr);
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(listener, app).await
+            .expect("HTTP server failed");
     }
 }
 
@@ -400,7 +483,7 @@ async fn handle_h264_direct(mut socket: WebSocket, state: Arc<AppState>) {
         m.push(if f.is_keyframe { 1 } else { 0 });
         m.extend_from_slice(&f.timestamp.to_le_bytes());
         m.extend_from_slice(&f.raw_data);
-        if socket.send(Message::Binary(m)).await.is_err() { break; }
+        if socket.send(Message::Binary(m.into())).await.is_err() { break; }
     }
 }
 

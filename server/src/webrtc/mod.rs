@@ -6,6 +6,7 @@ pub mod screen;
 
 use serde::{Deserialize, Serialize};
 use bytes::Bytes;
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -78,8 +79,11 @@ impl ClientCapabilities {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParameterSets {
+    #[serde(skip)]
     pub sps: Bytes,
+    #[serde(skip)]
     pub pps: Bytes,
+    #[serde(skip)]
     pub vps: Option<Bytes>,
 }
 

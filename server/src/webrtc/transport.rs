@@ -19,7 +19,7 @@ use tokio::task::AbortHandle;
 use tracing::{debug, info};
 use uuid::Uuid;
 use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_VP8};
+use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::APIBuilder;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
@@ -43,7 +43,7 @@ use crate::webrtc::{ClientCapabilities, Error, FrameType, Result, VideoFrame};
 // ============================================================================
 
 /// A shared RTP payload fragment (NAL unit or FU-A fragment)
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SharedPacket {
     pub payload: Bytes,
     pub marker: bool,
@@ -243,8 +243,6 @@ pub struct PeerInfo {
     pub created_at: std::time::Instant,
 }
 
-use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_VP8, MIME_TYPE_OPUS};
-...
 struct InternalConnection {
     connection_id: String,
     source_id: String,
@@ -336,18 +334,10 @@ impl PeerConnectionManager {
     pub async fn new(config: WebRtcConfig) -> Result<Self> {
         let mut media_engine = MediaEngine::default();
         media_engine.register_default_codecs().map_err(|e| Error::Config(e.to_string()))?;
-        // Ensure Opus is registered for audio
-        media_engine.register_codec(RTCRtpCodecCapability {
-            mime_type: MIME_TYPE_OPUS.to_string(),
-            clock_rate: 48000,
-            channels: 2,
-            sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
-            rtcp_feedback: vec![],
-        }, webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio).map_err(|e| Error::Config(e.to_string()))?;
+        // Note: Opus is included in register_default_codecs() so no need to register separately
 
-        media_engine.register_header_extension(webrtc::rtp_transceiver::rtp_header_extension::rtp_header_extension_capability::RTPHeaderExtensionCapability {
-            uri: "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay".to_string(),
-        }, webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video).ok();
+        // Note: Header extension registration not available in this webrtc version
+        // playout-delay extension would be registered here if supported
         let mut registry = Registry::new();
         registry = register_default_interceptors(registry, &mut media_engine).map_err(|e| Error::Config(e.to_string()))?;
         let api = APIBuilder::new().with_media_engine(media_engine).with_interceptor_registry(registry).with_setting_engine(SettingEngine::default()).build();
@@ -423,9 +413,16 @@ impl PeerConnectionManager {
         peer_connection.set_remote_description(RTCSessionDescription::offer(offer.sdp).map_err(|e| Error::Transport(e.to_string()))?).await.map_err(|e| Error::Transport(e.to_string()))?;
         let answer = peer_connection.create_answer(None).await.map_err(|e| Error::Transport(e.to_string()))?;
         peer_connection.set_local_description(answer.clone()).await.map_err(|e| Error::Transport(e.to_string()))?;
-        let playout_delay_id = peer_connection.get_receivers().get(0).and_then(|r| r.get_parameters().header_extensions.iter().find(|e| e.uri == "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay").map(|e| e.id as u8));
+        let receivers = peer_connection.get_receivers().await;
+        let mut playout_delay_id: Option<u8> = None;
+        if let Some(receiver) = receivers.get(0) {
+            let params = receiver.get_parameters().await;
+            playout_delay_id = params.header_extensions.iter()
+                .find(|e| e.uri == "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay")
+                .map(|e| e.id as u8);
+        }
         let local_desc = peer_connection.local_description().await.ok_or_else(|| Error::Transport("No local description".into()))?;
-        let sdp_answer = SdpAnswer { sdp_type: "answer".to_string(), sdp: local_desc.sdp };
+        let sdp_answer = SdpAnswer { sdp_type: "answer".to_string(), sdp: local_desc.sdp.clone() };
         let internal_conn = InternalConnection {
             connection_id: connection_id.clone(),
             source_id: source_id.to_string(),
@@ -479,9 +476,16 @@ impl PeerConnectionManager {
     pub fn get_source_connections(&self, source_id: &str) -> Vec<String> { self.source_connections.read().get(source_id).cloned().unwrap_or_default() }
 
     pub async fn remove_connection(&self, connection_id: &str) -> Result<()> {
-        if let Some(handle) = self.connections.write().remove(connection_id) {
+        let handle_opt = {
+            let mut guard = self.connections.write();
+            guard.remove(connection_id)
+        };
+        if let Some(handle) = handle_opt {
             if let Some(abort) = handle.rtcp_abort_handle { abort.abort(); }
-            if let Some(conns) = self.source_connections.write().get_mut(&handle.source_id) { conns.retain(|id| id != connection_id); }
+            {
+                let mut guard = self.source_connections.write();
+                if let Some(conns) = guard.get_mut(&handle.source_id) { conns.retain(|id| id != connection_id); }
+            }
             let _ = handle.peer_connection.close().await;
         }
         Ok(())
@@ -548,8 +552,97 @@ impl PeerConnectionManager {
     }
 
     pub async fn add_ice_candidate(&self, connection_id: &str, candidate: IceCandidate) -> Result<()> {
-        if let Some(conn) = self.connections.read().get(connection_id) { conn.peer_connection.add_ice_candidate(candidate.to_rtc_candidate_init()).await.map_err(|e| Error::Transport(e.to_string()))?; }
+        let peer_connection = {
+            let guard = self.connections.read();
+            guard.get(connection_id).map(|conn| Arc::clone(&conn.peer_connection))
+        };
+        if let Some(pc) = peer_connection {
+            pc.add_ice_candidate(candidate.to_rtc_candidate_init()).await.map_err(|e| Error::Transport(e.to_string()))?;
+        }
         Ok(())
+    }
+
+    pub async fn create_subscriber(&self, source_id: &str, offer: RTCSessionDescription) -> Result<(String, RTCSessionDescription)> {
+        let current_count = self.connection_count_for_source(source_id);
+        if current_count >= self.config.max_peers_per_source { return Err(Error::Transport(format!("Max peers reached for source {}", source_id))); }
+        let peer_connection = Arc::new(self.api.new_peer_connection(self.config.to_rtc_configuration()).await.map_err(|e| Error::Transport(e.to_string()))?);
+        let connection_id = Uuid::new_v4().to_string();
+        let fmtp_line = self.h264_fmtp_line(source_id).unwrap_or_default();
+        let video_track = Arc::new(TrackLocalStaticRTP::new(RTCRtpCodecCapability { mime_type: MIME_TYPE_H264.to_string(), clock_rate: self.config.video_clock_rate, channels: 0, sdp_fmtp_line: fmtp_line, rtcp_feedback: vec![] }, format!("video-{}", connection_id), format!("stream-{}", source_id)));
+        let audio_track = Arc::new(TrackLocalStaticRTP::new(RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_OPUS.to_string(),
+            clock_rate: 48000,
+            channels: 2,
+            sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
+            rtcp_feedback: vec![],
+        }, format!("audio-{}", connection_id), format!("audio-{}", source_id)));
+
+        let _video_sender = peer_connection.add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>).await.map_err(|e| Error::Transport(e.to_string()))?;
+        let _audio_sender = peer_connection.add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>).await.map_err(|e| Error::Transport(e.to_string()))?;
+        let (state_tx, _state_rx) = broadcast::channel(16);
+        let (ice_tx, _ice_rx) = mpsc::unbounded();
+        let conn_id_clone = connection_id.clone();
+        let event_tx_clone = self.event_tx.clone();
+        peer_connection.on_ice_candidate(Box::new(move |candidate| {
+            let conn_id = conn_id_clone.clone();
+            let mut ice_tx = ice_tx.clone();
+            let event_tx = event_tx_clone.clone();
+            Box::pin(async move {
+                if let Some(c) = candidate {
+                    let json = c.to_json().unwrap_or_default();
+                    let ice_candidate = IceCandidate { candidate: json.candidate, sdp_m_line_index: json.sdp_mline_index, sdp_mid: json.sdp_mid, username_fragment: json.username_fragment };
+                    let _ = ice_tx.send(ice_candidate.clone()).await;
+                    let _ = event_tx.send(PeerEvent::IceCandidate { connection_id: conn_id, candidate: ice_candidate });
+                }
+            })
+        }));
+        let conn_id_clone = connection_id.clone();
+        let src_id_clone = source_id.to_string();
+        let event_tx_clone = self.event_tx.clone();
+        let state_tx_clone = state_tx.clone();
+        peer_connection.on_peer_connection_state_change(Box::new(move |state| {
+            let conn_id = conn_id_clone.clone();
+            let src_id = src_id_clone.clone();
+            let event_tx = event_tx_clone.clone();
+            let state_tx = state_tx_clone.clone();
+            Box::pin(async move {
+                let conn_state = ConnectionState::from(state);
+                let _ = state_tx.send(conn_state);
+                match conn_state {
+                    ConnectionState::Connected => { let _ = event_tx.send(PeerEvent::Connected { connection_id: conn_id, source_id: src_id }); }
+                    ConnectionState::Disconnected | ConnectionState::Failed | ConnectionState::Closed => { let _ = event_tx.send(PeerEvent::Disconnected { connection_id: conn_id, source_id: src_id }); }
+                    _ => {}
+                }
+            })
+        }));
+        peer_connection.set_remote_description(offer).await.map_err(|e| Error::Transport(e.to_string()))?;
+        let answer = peer_connection.create_answer(None).await.map_err(|e| Error::Transport(e.to_string()))?;
+        peer_connection.set_local_description(answer.clone()).await.map_err(|e| Error::Transport(e.to_string()))?;
+        let local_desc = peer_connection.local_description().await.ok_or_else(|| Error::Transport("No local description".into()))?;
+        let internal_conn = InternalConnection {
+            connection_id: connection_id.clone(),
+            source_id: source_id.to_string(),
+            created_at: std::time::Instant::now(),
+            peer_connection: Arc::clone(&peer_connection),
+            video_track: video_track.clone(),
+            audio_track: audio_track.clone(),
+            state_tx,
+            sequence_number: 0,
+            audio_sequence_number: 0,
+            ssrc: rand::random::<u32>(),
+            audio_ssrc: rand::random::<u32>(),
+            rtcp_abort_handle: None,
+            playout_delay_id: None,
+            client_caps: crate::webrtc::ClientCapabilities::from_sdp(&local_desc.sdp),
+            video_codec: VideoCodecType::H264
+        };
+        self.connections.write().insert(connection_id.clone(), internal_conn);
+        self.source_connections.write().entry(source_id.to_string()).or_insert_with(Vec::new).push(connection_id.clone());
+        Ok((connection_id, local_desc))
+    }
+
+    pub async fn close_connection(&self, connection_id: &str) {
+        let _ = self.remove_connection(connection_id).await;
     }
 }
 
@@ -627,4 +720,84 @@ fn strip_annex_b(data: &[u8]) -> &[u8] {
 fn h264_profile_level_id(sps: &[u8]) -> Option<String> {
     if sps.len() < 4 { return None; }
     Some(format!("{:02x}{:02x}{:02x}", sps[1], sps[2], sps[3]))
+}
+
+// ============================================================================
+// WHEP Types
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhepRequest {
+    pub source_id: String,
+    pub offer_sdp: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct WhepResponse {
+    pub location: String,
+    pub etag: String,
+    pub answer_sdp: String,
+}
+
+pub struct WhepEndpoint {
+    manager: Arc<PeerConnectionManager>,
+    resources: RwLock<HashMap<String, String>>, // resource_id -> connection_id
+}
+
+impl WhepEndpoint {
+    pub fn new(manager: Arc<PeerConnectionManager>) -> Self {
+        Self {
+            manager,
+            resources: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub async fn create_resource(&self, req: WhepRequest) -> Result<WhepResponse> {
+        let offer = RTCSessionDescription::offer(req.offer_sdp).map_err(|e| Error::Config(e.to_string()))?;
+        let (connection_id, answer) = self.manager.create_subscriber(&req.source_id, offer).await?;
+
+        let resource_id = Uuid::new_v4().to_string();
+        {
+            let mut resources = self.resources.write();
+            resources.insert(resource_id.clone(), connection_id.clone());
+        }
+
+        Ok(WhepResponse {
+            location: format!("/api/whep/{}", resource_id),
+            etag: connection_id,
+            answer_sdp: answer.sdp,
+        })
+    }
+
+    pub fn get_resource(&self, resource_id: &str) -> Option<String> {
+        let resources = self.resources.read();
+        resources.get(resource_id).cloned()
+    }
+
+    pub async fn add_ice_candidate(&self, resource_id: &str, candidate: IceCandidate) -> Result<()> {
+        let connection_id = {
+            let resources = self.resources.read();
+            resources.get(resource_id).cloned()
+        };
+
+        if let Some(conn_id) = connection_id {
+            self.manager.add_ice_candidate(&conn_id, candidate).await
+        } else {
+            Err(Error::Transport("Resource not found".into()))
+        }
+    }
+
+    pub async fn delete_resource(&self, resource_id: &str) -> Result<()> {
+        let connection_id = {
+            let mut resources = self.resources.write();
+            resources.remove(resource_id)
+        };
+
+        if let Some(conn_id) = connection_id {
+            self.manager.close_connection(&conn_id).await;
+            Ok(())
+        } else {
+            Err(Error::Transport("Resource not found".into()))
+        }
+    }
 }

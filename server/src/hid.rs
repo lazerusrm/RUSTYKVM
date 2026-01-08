@@ -1,4 +1,4 @@
-use axum {
+use axum::{
     extract::{State, Json},
     response::IntoResponse,
 };
@@ -13,7 +13,7 @@ use uuid::Uuid;
 #[derive(Debug, Deserialize)]
 pub struct PasteReq {
     pub content: String,
-    pub langue: Option<String>,
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,7 +52,7 @@ pub async fn paste_handler(
         return (StatusCode::BAD_REQUEST, "Content too long").into_response();
     }
 
-    let char_map = get_char_map(req.langue.as_deref().unwrap_or(""));
+    let char_map = get_char_map(req.language.as_deref().unwrap_or(""));
     let mut hid = state.hid.lock().await;
 
     let key_up = [0u8; 8];

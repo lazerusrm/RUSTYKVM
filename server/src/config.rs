@@ -3,6 +3,7 @@ use std::path::Path;
 use tokio::fs;
 use tracing::{info, warn};
 use uuid::Uuid;
+use base64::Engine;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
@@ -26,7 +27,7 @@ pub struct Config {
     pub password_policy: PasswordPolicy,
 }
 
-fn default_proto() -> String { "http".to_string() }
+fn default_proto() -> String { "https".to_string() }
 fn default_auth() -> String { "enable".to_string() }
 fn default_stun() -> String { "stun.l.google.com:19302".to_string() }
 
@@ -111,7 +112,12 @@ impl Default for JwtConfig {
 }
 
 fn generate_random_secret() -> String {
-    Uuid::new_v4().to_string()
+    use ring::rand::SecureRandom;
+
+    let rng = ring::rand::SystemRandom::new();
+    let mut key = [0u8; 32];
+    rng.fill(&mut key).expect("Failed to generate random bytes");
+    base64::engine::general_purpose::STANDARD.encode(&key)
 }
 
 fn default_jwt_duration() -> u64 { 2678400 }

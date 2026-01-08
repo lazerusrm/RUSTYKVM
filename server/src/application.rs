@@ -6,13 +6,11 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::Mutex;
-use tracing::{error, info, debug, warn};
-use std::path::{Path, PathBuf};
+use tracing::{error, info, warn};
+use std::path::Path;
 use sha2::{Sha512, Digest};
-use std::io::Read;
 use crate::AppState;
-use tokio::io::AsyncReadExt;
+use base64::Engine;
 
 const STABLE_URL: &str = "https://cdn.sipeed.com/nanokvm";
 const PREVIEW_URL: &str = "https://cdn.sipeed.com/nanokvm/preview";
@@ -47,6 +45,15 @@ pub struct GetPreviewRsp {
 #[derive(Debug, Deserialize)]
 pub struct SetPreviewReq {
     pub enable: bool,
+}
+
+pub async fn get_version_handler() -> impl IntoResponse {
+    let current = tokio::fs::read_to_string("/kvmapp/version").await.unwrap_or_else(|_| "1.0.0".to_string());
+    let latest = match get_latest_info().await {
+        Ok(info) => info.version,
+        Err(_) => current.clone(),
+    };
+    Json(GetVersionRsp { current, latest })
 }
 
 pub async fn get_preview_handler() -> impl IntoResponse {
@@ -166,7 +173,6 @@ async fn install_package(archive_path: &Path) -> anyhow::Result<()> {
     let _ = tokio::fs::remove_dir_all(BACKUP_DIR).await;
     tokio::fs::create_dir_all(BACKUP_DIR).await?;
     
-    // Using fs_extra for recursive copy/move
     let mut options = fs_extra::dir::CopyOptions::new();
     options.content_only = true;
     fs_extra::dir::move_dir(APP_DIR, BACKUP_DIR, &options)?;

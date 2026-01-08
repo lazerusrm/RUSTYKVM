@@ -253,6 +253,7 @@ const SCREEN_FPS_FILE: &str = "/kvmapp/kvm/fps";
 const SCREEN_QUALITY_FILE: &str = "/kvmapp/kvm/qlty";
 const SCREEN_RES_FILE: &str = "/kvmapp/kvm/res";
 
+#[cfg(target_os = "linux")]
 pub async fn set_screen_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SetScreenReq>,
@@ -453,10 +454,10 @@ pub async fn set_jiggler_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SetMouseJigglerReq>,
 ) -> impl IntoResponse {
-    let res = if req.enabled {
-        state.jiggler.enable(req.mode.as_deref().unwrap_or("relative")).await
+    let res: Result<(), anyhow::Error> = if req.enabled {
+        state.jiggler.enable(req.mode.as_deref().unwrap_or("relative")).await.map_err(|e| anyhow::anyhow!(e))
     } else {
-        state.jiggler.disable().await
+        state.jiggler.disable().await.map_err(|e| anyhow::anyhow!(e))
     };
 
     match res {
@@ -475,7 +476,7 @@ async fn handle_terminal_socket(mut socket: WebSocket) {
     #[cfg(target_os = "linux")]
     {
         let pty_system = native_pty_system();
-        let pair = match pty_system.open_pty(PtySize {
+        let pair = match pty_system.openpty(PtySize {
             rows: 24,
             cols: 80,
             pixel_width: 0,
@@ -497,7 +498,7 @@ async fn handle_terminal_socket(mut socket: WebSocket) {
             }
         };
 
-        let reader = match pair.master.try_clone_reader() {
+        let mut reader = match pair.master.try_clone_reader() {
             Ok(r) => r,
             Err(e) => {
                 error!("Failed to clone PTY reader: {}", e);
@@ -528,7 +529,7 @@ async fn handle_terminal_socket(mut socket: WebSocket) {
                 }).await.unwrap();
 
                 if n.1 > 0 {
-                    if ws_sender.send(Message::Binary(n.0[..n.1].to_vec())).await.is_err() {
+                    if ws_sender.send(Message::Binary(n.0[..n.1].to_vec().into())).await.is_err() {
                         break;
                     }
                 } else {
@@ -611,11 +612,15 @@ pub async fn run_script_handler(Json(req): Json<RunScriptReq>) -> impl IntoRespo
         return StatusCode::BAD_REQUEST.into_response();
     };
     if !path.exists() { return StatusCode::NOT_FOUND.into_response(); }
-    let mut command = path.to_string_lossy().to_string();
-    if req.name.to_lowercase().ends_with(".py") { command = format!("python {}", command); }
 
     if req.script_type == "foreground" {
-        match Command::new("sh").arg("-c").arg(command).output().await {
+        let output = if req.name.to_lowercase().ends_with(".py") {
+            Command::new("python").arg(&path).output().await
+        } else {
+            Command::new("sh").arg(&path).output().await
+        };
+
+        match output {
             Ok(output) => {
                 let log = String::from_utf8_lossy(&output.stdout).to_string() + &String::from_utf8_lossy(&output.stderr);
                 Json(RunScriptRsp { log }).into_response()
@@ -623,7 +628,13 @@ pub async fn run_script_handler(Json(req): Json<RunScriptReq>) -> impl IntoRespo
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     } else {
-        tokio::spawn(async move { let _ = Command::new("sh").arg("-c").arg(command).status().await; });
+        let mut cmd = if req.name.to_lowercase().ends_with(".py") {
+            Command::new("python")
+        } else {
+            Command::new("sh")
+        };
+        cmd.arg(&path);
+        tokio::spawn(async move { let _ = cmd.status().await; });
         Json(RunScriptRsp { log: "Started in background".to_string() }).into_response()
     }
 }
@@ -793,7 +804,7 @@ pub async fn set_hostname_handler(Json(req): Json<SetHostnameReq>) -> impl IntoR
         let _ = enable_mdns_handler().await;
     }
 
-    StatusCode::OK
+    StatusCode::OK.into_response()
 }
 
 pub async fn get_web_title_handler() -> impl IntoResponse {
@@ -840,6 +851,7 @@ pub async fn reboot_handler() -> impl IntoResponse {
 
 
 
+#[cfg(target_os = "linux")]
 pub async fn reset_hdmi_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
     let _ = state.kvm.set_hdmi(false);
@@ -856,6 +868,7 @@ pub async fn reset_hdmi_handler(State(state): State<Arc<AppState>>) -> impl Into
 
 
 
+#[cfg(target_os = "linux")]
 pub async fn enable_hdmi_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
     let _ = state.kvm.set_hdmi(true);
@@ -868,6 +881,7 @@ pub async fn enable_hdmi_handler(State(state): State<Arc<AppState>>) -> impl Int
 
 
 
+#[cfg(target_os = "linux")]
 pub async fn disable_hdmi_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
     let _ = state.kvm.set_hdmi(false);

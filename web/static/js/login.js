@@ -337,3 +337,33 @@ function clearMessages() {
     document.getElementById('login-error').style.display = 'none';
     document.getElementById('login-success').style.display = 'none';
 }
+
+// Check SD card health
+async function checkSdHealth() {
+    try {
+        const response = await fetch(`${API_BASE}/storage/health/status`);
+        if (response.ok) {
+            const data = await response.json();
+            const healthEl = document.getElementById('sd-health');
+            const dotEl = document.getElementById('sd-health-dot');
+            const textEl = document.getElementById('sd-health-text');
+
+            const statusColors = {
+                'GOOD': '#00d9a0',
+                'FAIR': '#f39c12',
+                'WARNING': '#e67e22',
+                'FAIL': '#e94560',
+                'UNKNOWN': '#666'
+            };
+
+            healthEl.style.display = 'inline-flex';
+            dotEl.style.backgroundColor = statusColors[data.status] || statusColors['UNKNOWN'];
+            textEl.textContent = `SD: ${data.status}`;
+        }
+    } catch (error) {
+        console.log('SD health check unavailable');
+    }
+}
+
+// Initialize SD health check
+checkSdHealth();

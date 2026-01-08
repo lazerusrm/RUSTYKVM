@@ -41,7 +41,7 @@ pub async fn get_images_handler() -> impl IntoResponse {
         }
         Err(e) => {
             error!("Failed to get images: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to retrieve images").into_response()
         }
     }
 }
@@ -55,7 +55,7 @@ pub async fn mount_image_handler(Json(req): Json<MountImageReq>) -> impl IntoRes
         Ok(_) => StatusCode::OK.into_response(),
         Err(e) => {
             error!("Failed to mount image: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to mount image").into_response()
         }
     }
 }
@@ -67,7 +67,7 @@ pub async fn get_mounted_image_handler() -> impl IntoResponse {
         }
         Err(e) => {
             error!("Failed to get mounted image: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to retrieve mounted image").into_response()
         }
     }
 }
@@ -79,7 +79,7 @@ pub async fn get_cdrom_handler() -> impl IntoResponse {
         }
         Err(e) => {
             error!("Failed to get cdrom flag: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to retrieve cdrom status").into_response()
         }
     }
 }
@@ -91,7 +91,7 @@ pub async fn delete_image_handler(Json(req): Json<DeleteImageReq>) -> impl IntoR
         Ok(_) => StatusCode::OK.into_response(),
         Err(e) => {
             error!("Failed to delete image: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete image").into_response()
         }
     }
 }

@@ -12,10 +12,11 @@ hid = { path = "../hid" }
 vm = { path = "../vm" }
 storage = { path = "../storage" }
 network = { path = "../network" }
-audio = { path = "../audio" }
+audio = { path = "../audio", optional = true }
 tokio = { version = "1.43", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 axum = { version = "0.8", features = ["ws", "multipart"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 tower-http = { version = "0.6", features = ["fs", "trace", "set-header", "cors", "compression-full"] }
 libc = "0.2"
 tracing = "0.1"
@@ -24,13 +25,19 @@ tracing-appender = "0.2"
 bytes = "1.1"
 futures = "0.3"
 webrtc = "0.11"
-opus = "0.3"
+opus = { version = "0.3", optional = true }
+subtle = "2.4"
+aes = "0.8"
+cbc = "0.1"
+ring = "0.17"
+walkdir = "2.3"
+zip = "2.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 uuid = { version = "1.0", features = ["v4"] }
 base64 = "0.22"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 url = "2.5"
 anyhow = "1.0"
 thiserror = "2.0"

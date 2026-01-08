@@ -75,10 +75,11 @@ async fn handle_ws_signaling(socket: WebSocket, state: Arc<AppState>) {
                                 event: "video-answer".to_string(),
                                 data: answer.sdp,
                             }).await;
-                            
+
                             let msg_tx_clone = msg_tx.clone();
                             let conn_id = handle.connection_id.clone();
                             let webrtc_mgr_clone = webrtc_mgr.clone();
+                            let peer_handle_clone = conn_id.clone();
 
                             // Spawn task to forward local candidates
                             tokio::spawn(async move {
@@ -94,7 +95,7 @@ async fn handle_ws_signaling(socket: WebSocket, state: Arc<AppState>) {
                                 let _ = webrtc_mgr_clone.remove_connection(&conn_id).await;
                             });
 
-                            peer_handle = Some(handle.connection_id.clone());
+                            peer_handle = Some(peer_handle_clone);
                         }
                         Err(e) => {
                             error!("Failed to handle WebRTC offer: {}", e);

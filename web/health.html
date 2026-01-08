@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Storage Health - NanoKVM</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            min-height: 100vh;
+            color: #eee;
+        }
+        .header {
+            background: #16213e;
+            padding: 1rem 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid #0f3460;
+        }
+        .header h1 { font-size: 1.25rem; color: #e94560; }
+        .back-link {
+            color: #e94560;
+            text-decoration: none;
+            font-size: 0.875rem;
+        }
+        .back-link:hover { text-decoration: underline; }
+        .container {
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+        .card {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .card h2 {
+            font-size: 1rem;
+            color: #aaa;
+            margin-bottom: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .health-status {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        .status-badge {
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-weight: bold;
+            font-size: 0.875rem;
+        }
+        .status-GOOD { background: rgba(0, 217, 160, 0.2); color: #00d9a0; }
+        .status-FAIR { background: rgba(243, 156, 18, 0.2); color: #f39c12; }
+        .status-WARNING { background: rgba(230, 126, 34, 0.2); color: #e67e22; }
+        .status-FAIL { background: rgba(233, 69, 96, 0.2); color: #e94560; }
+        .status-UNKNOWN { background: rgba(136, 136, 136, 0.2); color: #888; }
+        .health-score {
+            font-size: 2rem;
+            font-weight: bold;
+        }
+        .health-score span {
+            font-size: 1rem;
+            color: #888;
+            font-weight: normal;
+        }
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+        .metric {
+            background: #1a1a2e;
+            padding: 1rem;
+            border-radius: 8px;
+        }
+        .metric-label {
+            font-size: 0.75rem;
+            color: #888;
+            margin-bottom: 0.25rem;
+        }
+        .metric-value {
+            font-size: 1.25rem;
+            font-weight: bold;
+        }
+        .metric-value.ok { color: #00d9a0; }
+        .metric-value.warning { color: #f39c12; }
+        .metric-value.critical { color: #e94560; }
+        .refresh-btn {
+            background: #0f3460;
+            color: #eee;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            transition: background 0.2s;
+        }
+        .refresh-btn:hover { background: #1a4a7a; }
+        .refresh-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #888;
+        }
+        .info-box {
+            background: #1a1a2e;
+            padding: 1rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            color: #888;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Storage Health</h1>
+        <a href="/login.html" class="back-link">← Back to Login</a>
+    </div>
+
+    <div class="container">
+        <div class="card">
+            <h2>Overall Status</h2>
+            <div id="health-status" class="loading">Loading...</div>
+        </div>
+
+        <div class="card">
+            <h2>Metrics</h2>
+            <div id="metrics" class="loading">Loading...</div>
+        </div>
+
+        <div class="card">
+            <h2>Information</h2>
+            <div class="info-box">
+                <strong>Wear Level:</strong> Estimated remaining lifespan of the microSD card based on internal wear leveling.<br><br>
+                <strong>I/O Errors:</strong> Cumulative read/write errors. Low values are normal; high values indicate potential card failure.<br><br>
+                <strong>Temperature:</strong> Device temperature during operation. High temperatures can reduce card lifespan.<br><br>
+                <strong>Health Score:</strong> Overall health assessment (0-100). Scores below 50 indicate the card should be replaced soon.
+            </div>
+        </div>
+
+        <div style="text-align: center;">
+            <button id="refresh-btn" class="refresh-btn">Refresh</button>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api';
+
+        async function loadHealth() {
+            const statusEl = document.getElementById('health-status');
+            const metricsEl = document.getElementById('metrics');
+            const btn = document.getElementById('refresh-btn');
+
+            btn.disabled = true;
+            btn.textContent = 'Loading...';
+
+            try {
+                const response = await fetch(`${API_BASE}/storage/health/detailed`);
+                if (!response.ok) throw new Error('Failed to fetch');
+
+                const health = await response.json();
+
+                const statusColors = {
+                    'GOOD': 'status-GOOD',
+                    'FAIR': 'status-FAIR',
+                    'WARNING': 'status-WARNING',
+                    'FAIL': 'status-FAIL',
+                    'UNKNOWN': 'status-UNKNOWN'
+                };
+
+                statusEl.innerHTML = `
+                    <div class="health-status">
+                        <div class="status-badge ${statusColors[health.status] || 'status-UNKNOWN'}">${health.status}</div>
+                        <div class="health-score">${health.health_score}<span>/100</span></div>
+                    </div>
+                `;
+
+                const wearValue = health.wear_level !== null ? `${health.wear_level}%` : 'N/A';
+                const tempValue = health.temperature !== null ? `${health.temperature}°C` : 'N/A';
+                const ioValue = health.io_errors;
+                const readValue = health.read_count ? formatNumber(health.read_count) : 'N/A';
+                const writeValue = health.write_count ? formatNumber(health.write_count) : 'N/A';
+                const cyclesValue = health.power_cycles ? formatNumber(health.power_cycles) : 'N/A';
+
+                const lastCheck = new Date(health.last_check).toLocaleString();
+
+                metricsEl.innerHTML = `
+                    <div class="metrics-grid">
+                        <div class="metric">
+                            <div class="metric-label">Wear Level</div>
+                            <div class="metric-value ${getWearClass(health.wear_level)}">${wearValue}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">I/O Errors</div>
+                            <div class="metric-value ${getIoClass(health.io_errors)}">${ioValue}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Temperature</div>
+                            <div class="metric-value ${getTempClass(health.temperature)}">${tempValue}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Power Cycles</div>
+                            <div class="metric-value">${cyclesValue}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Total Reads</div>
+                            <div class="metric-value">${readValue}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Total Writes</div>
+                            <div class="metric-value">${writeValue}</div>
+                        </div>
+                    </div>
+                    <p style="margin-top: 1rem; font-size: 0.75rem; color: #666;">Last checked: ${lastCheck}</p>
+                `;
+            } catch (error) {
+                console.error('Health check failed:', error);
+                statusEl.innerHTML = '<p style="color: #e94560;">Failed to load health data</p>';
+                metricsEl.innerHTML = '';
+            }
+
+            btn.disabled = false;
+            btn.textContent = 'Refresh';
+        }
+
+        function formatNumber(num) {
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+            return num.toString();
+        }
+
+        function getWearClass(wear) {
+            if (wear === null) return '';
+            if (wear < 30) return 'critical';
+            if (wear < 50) return 'warning';
+            return 'ok';
+        }
+
+        function getIoClass(errors) {
+            if (errors > 50) return 'critical';
+            if (errors > 10) return 'warning';
+            return 'ok';
+        }
+
+        function getTempClass(temp) {
+            if (temp === null) return '';
+            if (temp > 70) return 'critical';
+            if (temp > 60) return 'warning';
+            return 'ok';
+        }
+
+        document.getElementById('refresh-btn').addEventListener('click', loadHealth);
+        loadHealth();
+    </script>
+</body>
+</html>
