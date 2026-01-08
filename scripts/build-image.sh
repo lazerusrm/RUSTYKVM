@@ -128,59 +128,56 @@ fi
 
 # Create library path config
 log_info "Configuring library paths..."
-echo "/kvmapp/dl_lib" > "$MOUNT_POINT/etc/ld.so.conf.d/nanokvm.conf"
-
-# Update init script to use Rust server
-INIT_SCRIPT="$MOUNT_POINT/etc/init.d/S95nanokvm"
-if [ -f "$INIT_SCRIPT" ]; then
-    log_info "Updating init script..."
-    sed -i 's|NanoKVM-Server|nanokvm-server|g' "$INIT_SCRIPT"
-    sed -i 's|/kvmapp/server/|/kvmapp/|g' "$INIT_SCRIPT"
+if [ -d "$MOUNT_POINT/etc/ld.so.conf.d" ]; then
+    echo "/kvmapp/dl_lib" > "$MOUNT_POINT/etc/ld.so.conf.d/nanokvm.conf"
+elif [ -f "$MOUNT_POINT/etc/ld.so.conf" ]; then
+    grep -q "/kvmapp/dl_lib" "$MOUNT_POINT/etc/ld.so.conf" || echo "/kvmapp/dl_lib" >> "$MOUNT_POINT/etc/ld.so.conf"
 fi
 
-# Create new init script if not exists
-if [ ! -f "$INIT_SCRIPT" ]; then
-    log_info "Creating init script..."
-    cat > "$INIT_SCRIPT" << 'INITEOF'
-#!/bin/sh
-### BEGIN INIT INFO
-# Provides:          nanokvm
-# Required-Start:    $network
-# Required-Stop:     $network
-# Default-Start:     2 3 4 5
-# Default-Stop:      0 1 6
-# Description:       NanoKVM-RS Server
-### END INIT INFO
+# Disable any existing NanoKVM init scripts
+for script in "$MOUNT_POINT"/etc/init.d/S*kvm* "$MOUNT_POINT"/etc/init.d/S*NanoKVM*; do
+    if [ -f "$script" ] && [ "$script" != "$MOUNT_POINT/etc/init.d/S95nanokvm" ]; then
+        log_info "Disabling original init script: $script"
+        mv "$script" "${script}.disabled" 2>/dev/null || true
+    fi
+done
 
+# Create init script
+INIT_SCRIPT="$MOUNT_POINT/etc/init.d/S95nanokvm"
+log_info "Creating init script..."
+cat > "$INIT_SCRIPT" << 'INITEOF'
+#!/bin/sh
+export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
 DAEMON=/kvmapp/nanokvm-server
 PIDFILE=/var/run/nanokvm.pid
 LOGFILE=/var/log/nanokvm.log
 
 case "$1" in
-    start)
-        echo "Starting NanoKVM-RS..."
-        cd /kvmapp
-        start-stop-daemon -S -b -m -p $PIDFILE -a $DAEMON >> $LOGFILE 2>&1
-        ;;
-    stop)
-        echo "Stopping NanoKVM-RS..."
-        start-stop-daemon -K -p $PIDFILE -s TERM
-        rm -f $PIDFILE
-        ;;
-    restart)
-        $0 stop
-        sleep 1
-        $0 start
-        ;;
-    *)
-        echo "Usage: $0 {start|stop|restart}"
-        exit 1
-        ;;
+  start)
+    echo "Starting NanoKVM-RS..."
+    cd /kvmapp
+    $DAEMON >> $LOGFILE 2>&1 &
+    echo $! > $PIDFILE
+    ;;
+  stop)
+    if [ -f $PIDFILE ]; then
+      kill $(cat $PIDFILE) 2>/dev/null
+      rm -f $PIDFILE
+    fi
+    ;;
+  restart)
+    $0 stop
+    sleep 1
+    $0 start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
 esac
 exit 0
 INITEOF
-    chmod +x "$INIT_SCRIPT"
-fi
+chmod +x "$INIT_SCRIPT"
 
 # Create version marker
 echo "NanoKVM-RS $(date +%Y%m%d)" > "$MOUNT_POINT/kvmapp/.version-rs"

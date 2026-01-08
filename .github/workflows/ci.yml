@@ -158,44 +158,54 @@ jobs:
           sudo rm -rf /mnt/nanokvm/kvmapp/web
           sudo cp -r web /mnt/nanokvm/kvmapp/web
 
-          # Setup library path (create directory if needed, or use ld.so.conf directly)
+          # Setup library path
           if [ -d /mnt/nanokvm/etc/ld.so.conf.d ]; then
             echo "/kvmapp/dl_lib" | sudo tee /mnt/nanokvm/etc/ld.so.conf.d/nanokvm.conf
-          else
-            # Append to ld.so.conf if ld.so.conf.d doesn't exist
-            if [ -f /mnt/nanokvm/etc/ld.so.conf ]; then
-              grep -q "/kvmapp/dl_lib" /mnt/nanokvm/etc/ld.so.conf || echo "/kvmapp/dl_lib" | sudo tee -a /mnt/nanokvm/etc/ld.so.conf
-            fi
+          elif [ -f /mnt/nanokvm/etc/ld.so.conf ]; then
+            grep -q "/kvmapp/dl_lib" /mnt/nanokvm/etc/ld.so.conf || echo "/kvmapp/dl_lib" | sudo tee -a /mnt/nanokvm/etc/ld.so.conf
           fi
 
-          # Also set LD_LIBRARY_PATH in the init script as fallback
-          export LD_LIBRARY_PATH=/kvmapp/dl_lib:\$LD_LIBRARY_PATH
+          # Disable original NanoKVM init scripts if they exist
+          for script in /mnt/nanokvm/etc/init.d/S*kvm* /mnt/nanokvm/etc/init.d/S*NanoKVM*; do
+            if [ -f "$script" ] && [ "$script" != "/mnt/nanokvm/etc/init.d/S95nanokvm" ]; then
+              echo "Disabling original init script: $script"
+              sudo mv "$script" "${script}.disabled" 2>/dev/null || true
+            fi
+          done
 
-          # Create/update init script with LD_LIBRARY_PATH
-          sudo tee /mnt/nanokvm/etc/init.d/S95nanokvm << 'EOF'
-          #!/bin/sh
-          export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
-          DAEMON=/kvmapp/nanokvm-server
-          PIDFILE=/var/run/nanokvm.pid
-          LOGFILE=/var/log/nanokvm.log
-          case "$1" in
-            start)
-              echo "Starting NanoKVM-RS..."
-              cd /kvmapp
-              $DAEMON >> $LOGFILE 2>&1 &
-              echo $! > $PIDFILE
-              ;;
-            stop)
-              if [ -f $PIDFILE ]; then
-                kill $(cat $PIDFILE) 2>/dev/null
-                rm -f $PIDFILE
-              fi
-              ;;
-            restart)
-              $0 stop; sleep 1; $0 start
-              ;;
-          esac
-          EOF
+          # Create init script (NO LEADING WHITESPACE - critical for shebang)
+          sudo tee /mnt/nanokvm/etc/init.d/S95nanokvm > /dev/null << 'INITEOF'
+#!/bin/sh
+export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
+DAEMON=/kvmapp/nanokvm-server
+PIDFILE=/var/run/nanokvm.pid
+LOGFILE=/var/log/nanokvm.log
+
+case "$1" in
+  start)
+    echo "Starting NanoKVM-RS..."
+    cd /kvmapp
+    $DAEMON >> $LOGFILE 2>&1 &
+    echo $! > $PIDFILE
+    ;;
+  stop)
+    if [ -f $PIDFILE ]; then
+      kill $(cat $PIDFILE) 2>/dev/null
+      rm -f $PIDFILE
+    fi
+    ;;
+  restart)
+    $0 stop
+    sleep 1
+    $0 start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac
+exit 0
+INITEOF
           sudo chmod +x /mnt/nanokvm/etc/init.d/S95nanokvm
 
           # Version marker
