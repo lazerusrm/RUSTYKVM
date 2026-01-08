@@ -726,24 +726,19 @@ jobs:
           # Write diagnostic file to multiple locations for USB access
           # ============================================================
           echo "Writing diagnostic marker files..."
-
-          DIAG_CONTENT="NanoKVM-RS ${VERSION}
-Built: $(date)
-Commit: ${GITHUB_SHA:-unknown}
-
-This file proves the SD card was modified successfully.
-If you can read this via USB, the rootfs was modified.
-
-Check /var/log/nanokvm.log for runtime logs.
-Check /var/log/boot-diag.log for boot diagnostics.
-"
-          echo "$DIAG_CONTENT" | sudo tee /mnt/nanokvm/NANOKVM-RS-README.txt
-          echo "$DIAG_CONTENT" | sudo tee /mnt/nanokvm/kvmapp/NANOKVM-RS-README.txt
-
-          # Also write to /boot if it's a separate mount
-          # (will fail silently if not)
+          sudo tee /mnt/nanokvm/NANOKVM-RS-README.txt > /dev/null << EOFDIAG
+          NanoKVM-RS ${VERSION}
+          Built: $(date)
+          Commit: ${GITHUB_SHA:-unknown}
+          This file proves the SD card was modified successfully.
+          If you can read this via USB, the rootfs was modified.
+          Check /var/log/nanokvm.log for runtime logs.
+          Check /var/log/boot-diag.log for boot diagnostics.
+          EOFDIAG
+          sudo sed -i 's/^          //' /mnt/nanokvm/NANOKVM-RS-README.txt
+          sudo cp /mnt/nanokvm/NANOKVM-RS-README.txt /mnt/nanokvm/kvmapp/NANOKVM-RS-README.txt
           sudo mkdir -p /mnt/nanokvm/boot 2>/dev/null || true
-          echo "$DIAG_CONTENT" | sudo tee /mnt/nanokvm/boot/NANOKVM-RS-README.txt 2>/dev/null || true
+          sudo cp /mnt/nanokvm/NANOKVM-RS-README.txt /mnt/nanokvm/boot/NANOKVM-RS-README.txt 2>/dev/null || true
 
           # Unmount rootfs
           sudo sync
@@ -760,15 +755,7 @@ Check /var/log/boot-diag.log for boot diagnostics.
               MOUNT_DIR="/mnt/part${PART_NUM}"
               sudo mkdir -p "$MOUNT_DIR"
               if sudo mount "$part" "$MOUNT_DIR" 2>/dev/null; then
-                MARKER_CONTENT="PARTITION ${PART_NUM}
-Device: ${part}
-NanoKVM-RS ${VERSION}
-Built: $(date)
-
-If you see this file via USB, then USB mass storage
-is showing partition ${PART_NUM}.
-"
-                echo "$MARKER_CONTENT" | sudo tee "$MOUNT_DIR/PARTITION-${PART_NUM}-MARKER.txt"
+                echo "PARTITION ${PART_NUM} - Device: ${part} - NanoKVM-RS ${VERSION} - If you see this via USB, partition ${PART_NUM} is exposed" | sudo tee "$MOUNT_DIR/PARTITION-${PART_NUM}-MARKER.txt"
                 echo "Wrote marker to partition ${PART_NUM}"
                 sudo sync
                 sudo umount "$MOUNT_DIR"
