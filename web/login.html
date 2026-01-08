@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NanoKVM Login</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #eee;
+        }
+        .login-container {
+            background: #16213e;
+            padding: 2rem;
+            border-radius: 12px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 1.5rem;
+        }
+        .logo h1 { font-size: 1.5rem; color: #0f3460; color: #e94560; }
+        .logo p { font-size: 0.875rem; color: #888; }
+        .form-group { margin-bottom: 1rem; }
+        .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.875rem; color: #aaa; }
+        .form-group input {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #0f3460;
+            border-radius: 6px;
+            background: #1a1a2e;
+            color: #eee;
+            font-size: 1rem;
+        }
+        .form-group input:focus { outline: none; border-color: #e94560; }
+        .btn {
+            width: 100%;
+            padding: 0.75rem;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 0.5rem;
+        }
+        .btn-primary { background: #e94560; color: white; }
+        .btn-primary:hover { background: #d63850; }
+        .btn-secondary { background: #0f3460; color: #eee; }
+        .btn-secondary:hover { background: #1a4a7a; }
+        .btn-success { background: #00d9a0; color: #1a1a2e; }
+        .btn-success:hover { background: #00c490; }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .divider {
+            display: flex;
+            align-items: center;
+            margin: 1.5rem 0;
+            color: #666;
+            font-size: 0.875rem;
+        }
+        .divider::before, .divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: #0f3460;
+        }
+        .divider span { padding: 0 1rem; }
+        .hint { font-size: 0.75rem; color: #888; text-align: center; margin-top: 0.5rem; }
+        .error { color: #e94560; font-size: 0.875rem; margin-bottom: 1rem; text-align: center; }
+        .success { color: #00d9a0; font-size: 0.875rem; margin-bottom: 1rem; text-align: center; }
+        .loading { text-align: center; color: #888; }
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #0f3460;
+            border-top-color: #e94560;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .section { display: none; }
+        .section.active { display: block; }
+        .tooltip {
+            background: #0f3460;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            color: #aaa;
+            text-align: center;
+            margin-bottom: 1rem;
+        }
+        .qr-container {
+            text-align: center;
+            padding: 1rem;
+            background: white;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+        .qr-container img { max-width: 200px; }
+        .recovery-codes {
+            background: #1a1a2e;
+            padding: 1rem;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.875rem;
+            line-height: 1.8;
+            text-align: center;
+            margin-bottom: 1rem;
+            word-break: break-all;
+        }
+        .download-link {
+            display: block;
+            text-align: center;
+            color: #e94560;
+            font-size: 0.875rem;
+            text-decoration: none;
+            margin-bottom: 1rem;
+        }
+        .download-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">
+            <h1>NanoKVM</h1>
+            <p>Web-based KVM over IP</p>
+        </div>
+
+        <div id="login-error" class="error" style="display: none;"></div>
+        <div id="login-success" class="success" style="display: none;"></div>
+
+        <!-- Password Login Section (Always Visible) -->
+        <div id="password-section">
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" name="username" required autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" required autocomplete="current-password">
+                </div>
+                <button type="submit" class="btn btn-primary" id="btn-login">Login</button>
+            </form>
+        </div>
+
+        <!-- Passkey Section (Visible when passkey available) -->
+        <div id="passkey-section" class="section">
+            <button class="btn btn-secondary" id="btn-passkey">🔐 Use Passkey</button>
+        </div>
+
+        <!-- Setup Section (Tailscale connected, no funnel/passkey) -->
+        <div id="setup-section" class="section">
+            <button class="btn btn-success" id="btn-setup-passkey">🚀 Enable & Create Passkey</button>
+            <p class="hint">This will enable Tailscale Funnel and create your first passkey</p>
+        </div>
+
+        <!-- Tailscale Missing Section -->
+        <div id="tailscale-missing-section" class="section">
+            <div class="tooltip">🔐 Passkey login requires Tailscale</div>
+            <a href="https://tailscale.com/download" target="_blank" class="btn btn-secondary">📥 Install Tailscale</a>
+        </div>
+
+        <!-- QR Code Section -->
+        <div id="qr-section" class="section">
+            <div class="qr-container">
+                <img id="qr-image" src="" alt="QR Code">
+            </div>
+            <p class="hint">Scan with your phone's camera to authenticate</p>
+            <button class="btn btn-secondary" id="btn-cancel-qr">Cancel</button>
+        </div>
+
+        <!-- Recovery Section -->
+        <div id="recovery-section" class="section">
+            <div class="tooltip">Lost your passkey? Use a recovery code</div>
+            <div class="form-group">
+                <label for="recovery-code">Recovery Code</label>
+                <input type="text" id="recovery-code" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off">
+            </div>
+            <button class="btn btn-secondary" id="btn-recovery">Use Recovery Code</button>
+            <a href="#" id="btn-download-recovery" class="download-link">📄 Download Recovery Codes</a>
+            <button class="btn btn-secondary" id="btn-back-to-login">Back to Login</button>
+        </div>
+
+        <!-- Recovery Codes Display Section -->
+        <div id="recovery-display-section" class="section">
+            <p class="hint" style="margin-bottom: 1rem;">Save these recovery codes in a safe place.<br>One-time use only.</p>
+            <div class="recovery-codes" id="recovery-codes"></div>
+            <a href="#" id="btn-download-new-recovery" class="download-link">📄 Download</a>
+            <button class="btn btn-primary" id="btn-saved-codes">I've Saved My Codes</button>
+        </div>
+    </div>
+
+    <script src="/static/js/login.js"></script>
+</body>
+</html>

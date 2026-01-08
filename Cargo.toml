@@ -1,0 +1,23 @@
+[workspace]
+members = [
+    "kvm-sys",
+    "kvm",
+    "hid",
+    "server",
+    "vm",
+    "storage",
+    "network"
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = 'abort'
+strip = true
+
+# Patch dependencies for RISC-V compatibility
+[patch.crates-io]
+# Use newer versions that support RISC-V better if needed
+# bcrypt = { git = "https://github.com/trustlines-network/bcrypt-rs" }

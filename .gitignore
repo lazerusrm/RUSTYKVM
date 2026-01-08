@@ -1,0 +1,6 @@
+/target/
+**/*.md
+.DS_Store
+*.rs.bk
+debug/
+release/

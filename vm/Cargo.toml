@@ -1,0 +1,17 @@
+[package]
+name = "vm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.43", features = ["fs", "time"] }
+thiserror = "2.0"
+tracing = "0.1"
+parking_lot = "0.12"
+bytes = "1.1"
+hid = { path = "../hid" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+
+# Add other dependencies as needed, e.g., for configuration management

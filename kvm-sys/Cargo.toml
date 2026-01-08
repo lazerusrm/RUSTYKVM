@@ -1,0 +1,12 @@
+[package]
+name = "kvm-sys"
+version = "0.1.0"
+edition = "2021"
+links = "kvm"
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+# Using a fixed version or latest within 0.1
+# bindgen = "0.71"

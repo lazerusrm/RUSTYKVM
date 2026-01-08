@@ -1,0 +1,15 @@
+[build]
+# Cross-compilation for NanoKVM (RISC-V T-Head C906)
+target = "riscv64gc-unknown-linux-gnu"
+
+[target.riscv64gc-unknown-linux-gnu]
+linker = "riscv64-unknown-linux-gnu-gcc"
+ar = "riscv64-unknown-linux-gnu-ar"
+
+# Optional: Specify custom sysroot if needed
+# sysroot = "/path/to/sysroot"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
