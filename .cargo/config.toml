@@ -1,13 +1,13 @@
 [build]
 # Cross-compilation for NanoKVM (RISC-V T-Head C906)
-target = "riscv64gc-unknown-linux-gnu"
+# MUST use musl target - the device runs musl libc, NOT glibc!
+target = "riscv64gc-unknown-linux-musl"
 
-[target.riscv64gc-unknown-linux-gnu]
-linker = "riscv64-unknown-linux-gnu-gcc"
-ar = "riscv64-unknown-linux-gnu-ar"
-
-# Optional: Specify custom sysroot if needed
-# sysroot = "/path/to/sysroot"
+[target.riscv64gc-unknown-linux-musl]
+linker = "riscv64-unknown-linux-musl-gcc"
+ar = "riscv64-unknown-linux-musl-ar"
+# Disable vector instructions - C906 uses RVV 0.7 (draft), not RVV 1.0
+rustflags = ["-C", "target-feature=-v"]
 
 [profile.release]
 opt-level = 2
