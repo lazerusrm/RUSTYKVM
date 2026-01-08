@@ -158,23 +158,38 @@ jobs:
           sudo rm -rf /mnt/nanokvm/kvmapp/web
           sudo cp -r web /mnt/nanokvm/kvmapp/web
 
-          # Setup library path
-          echo "/kvmapp/dl_lib" | sudo tee /mnt/nanokvm/etc/ld.so.conf.d/nanokvm.conf
+          # Setup library path (create directory if needed, or use ld.so.conf directly)
+          if [ -d /mnt/nanokvm/etc/ld.so.conf.d ]; then
+            echo "/kvmapp/dl_lib" | sudo tee /mnt/nanokvm/etc/ld.so.conf.d/nanokvm.conf
+          else
+            # Append to ld.so.conf if ld.so.conf.d doesn't exist
+            if [ -f /mnt/nanokvm/etc/ld.so.conf ]; then
+              grep -q "/kvmapp/dl_lib" /mnt/nanokvm/etc/ld.so.conf || echo "/kvmapp/dl_lib" | sudo tee -a /mnt/nanokvm/etc/ld.so.conf
+            fi
+          fi
 
-          # Create/update init script
+          # Also set LD_LIBRARY_PATH in the init script as fallback
+          export LD_LIBRARY_PATH=/kvmapp/dl_lib:\$LD_LIBRARY_PATH
+
+          # Create/update init script with LD_LIBRARY_PATH
           sudo tee /mnt/nanokvm/etc/init.d/S95nanokvm << 'EOF'
           #!/bin/sh
+          export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
           DAEMON=/kvmapp/nanokvm-server
           PIDFILE=/var/run/nanokvm.pid
+          LOGFILE=/var/log/nanokvm.log
           case "$1" in
             start)
               echo "Starting NanoKVM-RS..."
               cd /kvmapp
-              start-stop-daemon -S -b -m -p $PIDFILE -a $DAEMON
+              $DAEMON >> $LOGFILE 2>&1 &
+              echo $! > $PIDFILE
               ;;
             stop)
-              start-stop-daemon -K -p $PIDFILE -s TERM
-              rm -f $PIDFILE
+              if [ -f $PIDFILE ]; then
+                kill $(cat $PIDFILE) 2>/dev/null
+                rm -f $PIDFILE
+              fi
               ;;
             restart)
               $0 stop; sleep 1; $0 start
