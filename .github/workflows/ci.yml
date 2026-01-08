@@ -284,24 +284,51 @@ jobs:
           sudo mkdir -p /mnt/nanokvm
           sudo mount "$ROOTFS" /mnt/nanokvm
 
-          # Install our Rust server
+          # ============================================================
+          # MINIMAL APPROACH: Replace original binary in-place, change nothing else!
+          # The original init system should just work with our binary.
+          # ============================================================
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║           MINIMAL BINARY REPLACEMENT STRATEGY                ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+
+          # Find where the original server binary is
+          echo "=== Looking for original NanoKVM-Server binary ==="
+          find /mnt/nanokvm -name "NanoKVM-Server" -o -name "nanokvm*" 2>/dev/null | head -20
+          find /mnt/nanokvm -name "*.go" -o -name "server" -type f 2>/dev/null | head -20
+          echo ""
+
+          # Check kvmapp structure
+          echo "=== Full /kvmapp structure ==="
+          ls -laR /mnt/nanokvm/kvmapp/ 2>/dev/null | head -100
+          echo ""
+
+          # Check for any startup scripts that reference the server
+          echo "=== Searching for startup references ==="
+          grep -r "NanoKVM\|server\|kvmapp" /mnt/nanokvm/etc/ 2>/dev/null | grep -v ".bak" | head -50
+          echo ""
+
+          # CRITICAL: Check /etc/inittab - this controls what runs at boot!
+          echo "=== /etc/inittab (CRITICAL - controls boot) ==="
+          cat /mnt/nanokvm/etc/inittab 2>/dev/null || echo "No inittab found"
+          echo ""
+
+          # Check /etc/init.d/rcS - this is what usually runs S* scripts
+          echo "=== /etc/init.d/rcS ==="
+          cat /mnt/nanokvm/etc/init.d/rcS 2>/dev/null || echo "No rcS found"
+          echo ""
+
+          # Check for rc.local
+          echo "=== /etc/rc.local ==="
+          cat /mnt/nanokvm/etc/rc.local 2>/dev/null || echo "No rc.local found"
+          echo ""
+
+          # Install our Rust server - copy libraries first
           sudo mkdir -p /mnt/nanokvm/kvmapp/dl_lib
-
-          # Backup original if exists
-          if [ -f /mnt/nanokvm/kvmapp/server/NanoKVM-Server ]; then
-            sudo mv /mnt/nanokvm/kvmapp/server/NanoKVM-Server /mnt/nanokvm/kvmapp/server/NanoKVM-Server.go.bak
-          fi
-
-          # Copy new binary
-          sudo cp binary/nanokvm-server /mnt/nanokvm/kvmapp/nanokvm-server
-          sudo chmod +x /mnt/nanokvm/kvmapp/nanokvm-server
-
-          # Copy libraries
-          sudo cp dl_lib/*.so /mnt/nanokvm/kvmapp/dl_lib/
-
-          # Copy web assets
-          sudo rm -rf /mnt/nanokvm/kvmapp/web
-          sudo cp -r web /mnt/nanokvm/kvmapp/web
+          sudo cp dl_lib/*.so /mnt/nanokvm/kvmapp/dl_lib/ 2>/dev/null || echo "No .so files to copy"
 
           # Setup library path
           if [ -d /mnt/nanokvm/etc/ld.so.conf.d ]; then
@@ -310,13 +337,28 @@ jobs:
             grep -q "/kvmapp/dl_lib" /mnt/nanokvm/etc/ld.so.conf || echo "/kvmapp/dl_lib" | sudo tee -a /mnt/nanokvm/etc/ld.so.conf
           fi
 
-          # Disable original NanoKVM init scripts if they exist
-          for script in /mnt/nanokvm/etc/init.d/S*kvm* /mnt/nanokvm/etc/init.d/S*NanoKVM*; do
-            if [ -f "$script" ] && [ "$script" != "/mnt/nanokvm/etc/init.d/S95nanokvm" ]; then
-              echo "Disabling original init script: $script"
-              sudo mv "$script" "${script}.disabled" 2>/dev/null || true
-            fi
-          done
+          # Copy web assets
+          if [ -d /mnt/nanokvm/kvmapp/web ]; then
+            sudo rm -rf /mnt/nanokvm/kvmapp/web.bak
+            sudo mv /mnt/nanokvm/kvmapp/web /mnt/nanokvm/kvmapp/web.bak
+          fi
+          sudo cp -r web /mnt/nanokvm/kvmapp/web
+
+          # STRATEGY 1: Replace the ORIGINAL binary in its ORIGINAL location
+          # This way the existing init scripts should just work!
+          if [ -f /mnt/nanokvm/kvmapp/server/NanoKVM-Server ]; then
+            echo "Found original at /kvmapp/server/NanoKVM-Server - replacing in-place!"
+            sudo mv /mnt/nanokvm/kvmapp/server/NanoKVM-Server /mnt/nanokvm/kvmapp/server/NanoKVM-Server.go.bak
+            sudo cp binary/nanokvm-server /mnt/nanokvm/kvmapp/server/NanoKVM-Server
+            sudo chmod +x /mnt/nanokvm/kvmapp/server/NanoKVM-Server
+          fi
+
+          # STRATEGY 2: Also put it where we expect
+          sudo cp binary/nanokvm-server /mnt/nanokvm/kvmapp/nanokvm-server
+          sudo chmod +x /mnt/nanokvm/kvmapp/nanokvm-server
+
+          # DO NOT disable any original init scripts - let the original system work!
+          echo "=== NOT disabling any original init scripts ==="
 
           # ============================================================
           # DIAGNOSTIC: Dump base image structure for debugging
@@ -680,9 +722,60 @@ jobs:
           # Version marker
           echo "NanoKVM-RS ${VERSION}" | sudo tee /mnt/nanokvm/kvmapp/.version-rs
 
-          # Unmount
+          # ============================================================
+          # Write diagnostic file to multiple locations for USB access
+          # ============================================================
+          echo "Writing diagnostic marker files..."
+
+          DIAG_CONTENT="NanoKVM-RS ${VERSION}
+Built: $(date)
+Commit: ${GITHUB_SHA:-unknown}
+
+This file proves the SD card was modified successfully.
+If you can read this via USB, the rootfs was modified.
+
+Check /var/log/nanokvm.log for runtime logs.
+Check /var/log/boot-diag.log for boot diagnostics.
+"
+          echo "$DIAG_CONTENT" | sudo tee /mnt/nanokvm/NANOKVM-RS-README.txt
+          echo "$DIAG_CONTENT" | sudo tee /mnt/nanokvm/kvmapp/NANOKVM-RS-README.txt
+
+          # Also write to /boot if it's a separate mount
+          # (will fail silently if not)
+          sudo mkdir -p /mnt/nanokvm/boot 2>/dev/null || true
+          echo "$DIAG_CONTENT" | sudo tee /mnt/nanokvm/boot/NANOKVM-RS-README.txt 2>/dev/null || true
+
+          # Unmount rootfs
           sudo sync
           sudo umount /mnt/nanokvm
+
+          # ============================================================
+          # Write marker files to ALL partitions for USB diagnosis
+          # ============================================================
+          echo ""
+          echo "=== Writing markers to ALL partitions ==="
+          PART_NUM=1
+          for part in ${LOOP_DEV}p*; do
+            if [ -b "$part" ]; then
+              MOUNT_DIR="/mnt/part${PART_NUM}"
+              sudo mkdir -p "$MOUNT_DIR"
+              if sudo mount "$part" "$MOUNT_DIR" 2>/dev/null; then
+                MARKER_CONTENT="PARTITION ${PART_NUM}
+Device: ${part}
+NanoKVM-RS ${VERSION}
+Built: $(date)
+
+If you see this file via USB, then USB mass storage
+is showing partition ${PART_NUM}.
+"
+                echo "$MARKER_CONTENT" | sudo tee "$MOUNT_DIR/PARTITION-${PART_NUM}-MARKER.txt"
+                echo "Wrote marker to partition ${PART_NUM}"
+                sudo sync
+                sudo umount "$MOUNT_DIR"
+              fi
+              PART_NUM=$((PART_NUM + 1))
+            fi
+          done
           sudo losetup -d "$LOOP_DEV"
 
           # Compress
