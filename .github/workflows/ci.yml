@@ -337,28 +337,35 @@ jobs:
             grep -q "/kvmapp/dl_lib" /mnt/nanokvm/etc/ld.so.conf || echo "/kvmapp/dl_lib" | sudo tee -a /mnt/nanokvm/etc/ld.so.conf
           fi
 
-          # Copy web assets
-          if [ -d /mnt/nanokvm/kvmapp/web ]; then
-            sudo rm -rf /mnt/nanokvm/kvmapp/web.bak
-            sudo mv /mnt/nanokvm/kvmapp/web /mnt/nanokvm/kvmapp/web.bak
-          fi
-          sudo cp -r web /mnt/nanokvm/kvmapp/web
+          # DIAGNOSTIC: Don't replace web assets - keep original
+          # Copy our web assets to a separate location
+          echo "=== NOT replacing original web assets ==="
+          sudo cp -r web /mnt/nanokvm/kvmapp/web-rs 2>/dev/null || true
 
-          # STRATEGY 1: Replace the ORIGINAL binary in its ORIGINAL location
-          # This way the existing init scripts should just work!
+          # ============================================================
+          # DIAGNOSTIC BUILD: Do NOT replace original binary!
+          # Just add our binary alongside and see if system boots
+          # ============================================================
+          echo "=== DIAGNOSTIC MODE: NOT replacing original NanoKVM-Server ==="
+          echo "=== Original Go binary will run, we just add diagnostics ==="
+
+          # Show what original binary looks like
           if [ -f /mnt/nanokvm/kvmapp/server/NanoKVM-Server ]; then
-            echo "Found original at /kvmapp/server/NanoKVM-Server - replacing in-place!"
-            sudo mv /mnt/nanokvm/kvmapp/server/NanoKVM-Server /mnt/nanokvm/kvmapp/server/NanoKVM-Server.go.bak
-            sudo cp binary/nanokvm-server /mnt/nanokvm/kvmapp/server/NanoKVM-Server
-            sudo chmod +x /mnt/nanokvm/kvmapp/server/NanoKVM-Server
+            echo "Original binary info:"
+            ls -la /mnt/nanokvm/kvmapp/server/NanoKVM-Server
+            file /mnt/nanokvm/kvmapp/server/NanoKVM-Server
+          else
+            echo "WARNING: No original binary found at /kvmapp/server/NanoKVM-Server"
           fi
 
-          # STRATEGY 2: Also put it where we expect
-          sudo cp binary/nanokvm-server /mnt/nanokvm/kvmapp/nanokvm-server
-          sudo chmod +x /mnt/nanokvm/kvmapp/nanokvm-server
+          # Put our binary in a DIFFERENT location (don't replace original)
+          sudo mkdir -p /mnt/nanokvm/kvmapp/nanokvm-rs
+          sudo cp binary/nanokvm-server /mnt/nanokvm/kvmapp/nanokvm-rs/nanokvm-server
+          sudo chmod +x /mnt/nanokvm/kvmapp/nanokvm-rs/nanokvm-server
+          echo "Our Rust binary installed to /kvmapp/nanokvm-rs/nanokvm-server (NOT replacing original)"
 
           # DO NOT disable any original init scripts - let the original system work!
-          echo "=== NOT disabling any original init scripts ==="
+          echo "=== NOT modifying any original files ==="
 
           # ============================================================
           # DIAGNOSTIC: Dump base image structure for debugging
