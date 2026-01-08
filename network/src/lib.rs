@@ -211,7 +211,19 @@ impl NetworkManager {
         fs::write(WIFI_PASSWD_FILE, password).await?;
         fs::write(WIFI_CONNECT_FILE, b"").await?;
         info!("WiFi connection initiated for SSID: {}", ssid);
-        Ok(())
+
+        // Wait for connection to be established (up to 30 seconds)
+        for i in 0..30 {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if Self::is_wifi_connected().await {
+                info!("WiFi connected successfully to SSID: {} after {}s", ssid, i + 1);
+                return Ok(());
+            }
+            debug!("Waiting for WiFi connection... ({}s)", i + 1);
+        }
+
+        error!("WiFi connection timed out for SSID: {}", ssid);
+        Err(NetworkError::CommandFailed("Connection timed out".to_string()))
     }
 
     pub async fn disconnect_wifi() -> Result<(), NetworkError> {

@@ -223,6 +223,30 @@ fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
         m.insert('€', (0x40, 8));
         m.insert('²', (0x40, 31));
         m.insert('³', (0x40, 32));
+    } else if lang == "fr" {
+        // AZERTY Swaps
+        m.insert('a', (0, 20)); m.insert('A', (2, 20));
+        m.insert('q', (0, 4));  m.insert('Q', (2, 4));
+        m.insert('z', (0, 26)); m.insert('Z', (2, 26));
+        m.insert('w', (0, 29)); m.insert('W', (2, 29));
+        m.insert('m', (0, 51)); m.insert('M', (2, 51));
+        
+        // Digits (require shift on French AZERTY)
+        m.insert('1', (2, 30)); m.insert('2', (2, 31));
+        m.insert('3', (2, 32)); m.insert('4', (2, 33));
+        m.insert('5', (2, 34)); m.insert('6', (2, 35));
+        m.insert('7', (2, 36)); m.insert('8', (2, 37));
+        m.insert('9', (2, 38)); m.insert('0', (2, 39));
+
+        // Accents
+        m.insert('é', (0, 31)); m.insert('è', (0, 36));
+        m.insert('ç', (0, 38)); m.insert('à', (0, 39));
+        m.insert('ù', (0, 52));
+        
+        // Symbols
+        m.insert('&', (0, 30)); m.insert('é', (0, 31)); m.insert('"', (0, 32));
+        m.insert('\'', (0, 33)); m.insert('(', (0, 34)); m.insert('-', (0, 35));
+        m.insert('_', (0, 37)); m.insert(')', (0, 40));
     }
 
     m

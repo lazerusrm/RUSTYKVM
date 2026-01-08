@@ -74,38 +74,34 @@ pub async fn tailscale_status_handler() -> impl IntoResponse {
 }
 
 pub async fn tailscale_login_handler() -> impl IntoResponse {
-    // We use tokio::process::Command to avoid blocking
-    let output = Command::new("sh")
+    // We use tokio::process::Command with a timeout
+    let cmd_future = Command::new("sh")
         .arg("-c")
-        .arg("tailscale login --accept-dns=false --timeout=1m")
-        .output()
-        .await;
+        .arg("tailscale login --accept-dns=false --timeout=30s")
+        .output();
 
-    match output {
-        Ok(out) => {
-            // Tailscale often puts the login URL in stderr
-            let s = String::from_utf8_lossy(&out.stderr);
-            for line in s.lines() {
+    match tokio::time::timeout(std::time::Duration::from_secs(35), cmd_future).await {
+        Ok(Ok(out)) => {
+            // Tailscale login URL can be in stderr or stdout
+            let err_s = String::from_utf8_lossy(&out.stderr);
+            let out_s = String::from_utf8_lossy(&out.stdout);
+            
+            let combined = format!("{}{}", err_s, out_s);
+            for line in combined.lines() {
                 if line.contains("https://") {
                     if let Some(url_idx) = line.find("https://") {
                         let url = line[url_idx..].split_whitespace().next().unwrap_or_default();
-                        return Json(LoginRsp { url: url.to_string() }).into_response();
+                        if url.starts_with("https://login.tailscale.com") {
+                            return Json(LoginRsp { url: url.to_string() }).into_response();
+                        }
                     }
                 }
             }
-            // Sometimes it's in stdout too
-            let s = String::from_utf8_lossy(&out.stdout);
-            for line in s.lines() {
-                if line.contains("https://") {
-                    if let Some(url_idx) = line.find("https://") {
-                        let url = line[url_idx..].split_whitespace().next().unwrap_or_default();
-                        return Json(LoginRsp { url: url.to_string() }).into_response();
-                    }
-                }
-            }
+            error!("Tailscale login URL not found in output: {}", combined);
             (StatusCode::INTERNAL_SERVER_ERROR, "No login URL found").into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(_) => (StatusCode::GATEWAY_TIMEOUT, "Tailscale command timed out").into_response(),
     }
 }
 

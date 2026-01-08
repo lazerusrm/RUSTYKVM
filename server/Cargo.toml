@@ -12,6 +12,7 @@ hid = { path = "../hid" }
 vm = { path = "../vm" }
 storage = { path = "../storage" }
 network = { path = "../network" }
+audio = { path = "../audio" }
 tokio = { version = "1.43", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 axum = { version = "0.8", features = ["ws", "multipart"] }
@@ -23,6 +24,7 @@ tracing-appender = "0.2"
 bytes = "1.1"
 futures = "0.3"
 webrtc = "0.11"
+opus = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
@@ -51,6 +53,7 @@ cipher = "0.4"
 once_cell = "1.19"
 regex = "1.10"
 qrcode = "0.14"
+byteorder = "1.5"
 
 # Platform-specific dependencies
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -70,6 +70,7 @@ struct AppState {
     screen_config: crate::webrtc::screen::SharedScreenConfig,
     tx_mjpeg: broadcast::Sender<Bytes>,
     tx_h264: broadcast::Sender<H264Frame>,
+    tx_audio: broadcast::Sender<Bytes>,
     hid: Arc<Mutex<hid::HidEngine>>,
     webrtc: Arc<PeerConnectionManager>,
     whep: Arc<WhepEndpoint>,
@@ -84,6 +85,7 @@ struct AppState {
     screen_config: crate::webrtc::screen::SharedScreenConfig,
     tx_mjpeg: broadcast::Sender<Bytes>,
     tx_h264: broadcast::Sender<H264Frame>,
+    tx_audio: broadcast::Sender<Bytes>,
     hid: Arc<Mutex<hid::HidEngine>>,
     webrtc: Arc<PeerConnectionManager>,
     whep: Arc<WhepEndpoint>,
@@ -117,6 +119,7 @@ async fn main() {
     // Create Broadcast Channels
     let (tx_mjpeg, _rx) = broadcast::channel::<Bytes>(16);
     let (tx_h264, _rx) = broadcast::channel::<H264Frame>(16);
+    let (tx_audio, _rx) = broadcast::channel::<Bytes>(16);
 
     // Initialize WebRTC
     let mut webrtc_config_builder = WebRtcConfig::builder();
@@ -141,6 +144,7 @@ async fn main() {
         screen_config: screen_config.clone(),
         tx_mjpeg,
         tx_h264: tx_h264.clone(),
+        tx_audio: tx_audio.clone(),
         hid: hid_engine.clone(),
         webrtc: webrtc_manager.clone(),
         whep: whep_endpoint.clone(),
@@ -155,6 +159,7 @@ async fn main() {
         screen_config: screen_config.clone(),
         tx_mjpeg,
         tx_h264: tx_h264.clone(),
+        tx_audio: tx_audio.clone(),
         hid: hid_engine.clone(),
         webrtc: webrtc_manager.clone(),
         whep: whep_endpoint.clone(),
@@ -167,6 +172,8 @@ async fn main() {
         tokio::spawn(async move { mjpeg_hardware_loop(s1).await; });
         let s2 = shared_state.clone();
         tokio::spawn(async move { h264_hardware_loop(s2).await; });
+        let s3 = shared_state.clone();
+        tokio::spawn(async move { audio_hardware_loop(s3).await; });
     }
 
     let web_path = "web";
@@ -415,6 +422,62 @@ async fn whep_patch_handler(Path(id): Path<String>, State(state): State<Arc<AppS
 
 async fn whep_delete_handler(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.whep.delete_resource(&id).await { Ok(_) => StatusCode::NO_CONTENT, Err(_) => StatusCode::NOT_FOUND }
+}
+
+#[cfg(target_os = "linux")]
+async fn audio_hardware_loop(state: Arc<AppState>) {
+    use audio::AudioCapturer;
+    use opus::{Encoder, Application, Channels};
+
+    let capturer = match AudioCapturer::new(0, 0) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to initialize audio capturer: {}", e);
+            return;
+        }
+    };
+
+    let mut encoder = match Encoder::new(48000, Channels::Stereo, Application::Audio) {
+        Ok(e) => e,
+        Err(e) => {
+            error!("Failed to initialize Opus encoder: {}", e);
+            return;
+        }
+    };
+
+    let mut pcm_buf = vec![0u8; 1024 * 2 * 2]; // 1024 samples, 2 channels, 16-bit
+    let mut opus_buf = vec![0u8; 1024];
+    let mut pts = 0u32;
+
+    loop {
+        // We don't need a ticker here because pcm_read blocks until data is available (period_size)
+        match capturer.read(&mut pcm_buf) {
+            Ok(_) => {
+                // Convert bytes to i16 for Opus encoder
+                let pcm_i16: Vec<i16> = pcm_buf.chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+
+                match encoder.encode(&pcm_i16, &mut opus_buf) {
+                    Ok(size) => {
+                        let payload = Bytes::copy_from_slice(&opus_buf[..size]);
+                        let _ = state.tx_audio.send(payload.clone());
+
+                        if state.webrtc.total_connection_count() > 0 {
+                            let cids = state.webrtc.get_source_connections("default");
+                            let _ = state.webrtc.broadcast_audio(cids, pts, &payload).await;
+                        }
+                        pts = pts.wrapping_add(960); // 20ms @ 48kHz
+                    }
+                    Err(e) => error!("Opus encoding failed: {}", e),
+                }
+            }
+            Err(e) => {
+                error!("Audio read error: {}", e);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {

@@ -243,17 +243,24 @@ pub struct PeerInfo {
     pub created_at: std::time::Instant,
 }
 
+use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_VP8, MIME_TYPE_OPUS};
+...
 struct InternalConnection {
     connection_id: String,
     source_id: String,
     created_at: std::time::Instant,
     peer_connection: Arc<RTCPeerConnection>,
     video_track: Arc<TrackLocalStaticRTP>,
+    audio_track: Arc<TrackLocalStaticRTP>,
     state_tx: broadcast::Sender<ConnectionState>,
     sequence_number: u16,
+    audio_sequence_number: u16,
     ssrc: u32,
+    audio_ssrc: u32,
     rtcp_abort_handle: Option<AbortHandle>,
     playout_delay_id: Option<u8>,
+    client_caps: crate::webrtc::ClientCapabilities,
+    video_codec: VideoCodecType,
 }
 
 pub struct PeerConnectionHandle {
@@ -261,11 +268,15 @@ pub struct PeerConnectionHandle {
     pub source_id: String,
     peer_connection: Arc<RTCPeerConnection>,
     video_track: Arc<TrackLocalStaticRTP>,
+    audio_track: Arc<TrackLocalStaticRTP>,
     state_rx: broadcast::Receiver<ConnectionState>,
     ice_candidate_rx: mpsc::UnboundedReceiver<IceCandidate>,
     sequence_number: u16,
+    audio_sequence_number: u16,
     timestamp: u32,
+    audio_timestamp: u32,
     ssrc: u32,
+    audio_ssrc: u32,
     pub playout_delay_id: Option<u8>,
 }
 
@@ -325,6 +336,15 @@ impl PeerConnectionManager {
     pub async fn new(config: WebRtcConfig) -> Result<Self> {
         let mut media_engine = MediaEngine::default();
         media_engine.register_default_codecs().map_err(|e| Error::Config(e.to_string()))?;
+        // Ensure Opus is registered for audio
+        media_engine.register_codec(RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_OPUS.to_string(),
+            clock_rate: 48000,
+            channels: 2,
+            sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
+            rtcp_feedback: vec![],
+        }, webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio).map_err(|e| Error::Config(e.to_string()))?;
+
         media_engine.register_header_extension(webrtc::rtp_transceiver::rtp_header_extension::rtp_header_extension_capability::RTPHeaderExtensionCapability {
             uri: "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay".to_string(),
         }, webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video).ok();
@@ -352,7 +372,16 @@ impl PeerConnectionManager {
         let connection_id = Uuid::new_v4().to_string();
         let fmtp_line = self.h264_fmtp_line(source_id).unwrap_or_default();
         let video_track = Arc::new(TrackLocalStaticRTP::new(RTCRtpCodecCapability { mime_type: MIME_TYPE_H264.to_string(), clock_rate: self.config.video_clock_rate, channels: 0, sdp_fmtp_line: fmtp_line, rtcp_feedback: vec![] }, format!("video-{}", connection_id), format!("stream-{}", source_id)));
+        let audio_track = Arc::new(TrackLocalStaticRTP::new(RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_OPUS.to_string(),
+            clock_rate: 48000,
+            channels: 2,
+            sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
+            rtcp_feedback: vec![],
+        }, format!("audio-{}", connection_id), format!("audio-{}", source_id)));
+
         let rtp_sender = peer_connection.add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>).await.map_err(|e| Error::Transport(e.to_string()))?;
+        let _audio_sender = peer_connection.add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>).await.map_err(|e| Error::Transport(e.to_string()))?;
         let rtp_sender_clone = rtp_sender.clone();
         let rtcp_task = tokio::spawn(async move { let mut rtcp_buf = vec![0u8; 1500]; while let Ok((_, _)) = rtp_sender_clone.read(&mut rtcp_buf).await {} });
         let (state_tx, state_rx) = broadcast::channel(16);
@@ -397,10 +426,41 @@ impl PeerConnectionManager {
         let playout_delay_id = peer_connection.get_receivers().get(0).and_then(|r| r.get_parameters().header_extensions.iter().find(|e| e.uri == "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay").map(|e| e.id as u8));
         let local_desc = peer_connection.local_description().await.ok_or_else(|| Error::Transport("No local description".into()))?;
         let sdp_answer = SdpAnswer { sdp_type: "answer".to_string(), sdp: local_desc.sdp };
-        let internal_conn = InternalConnection { connection_id: connection_id.clone(), source_id: source_id.to_string(), created_at: std::time::Instant::now(), peer_connection: Arc::clone(&peer_connection), video_track: video_track.clone(), state_tx, sequence_number: 0, ssrc: rand::random::<u32>(), rtcp_abort_handle: Some(rtcp_task.abort_handle()), playout_delay_id, client_caps: ClientCapabilities::from_sdp(&local_desc.sdp), video_codec: VideoCodecType::H264 };
+        let internal_conn = InternalConnection {
+            connection_id: connection_id.clone(),
+            source_id: source_id.to_string(),
+            created_at: std::time::Instant::now(),
+            peer_connection: Arc::clone(&peer_connection),
+            video_track: video_track.clone(),
+            audio_track: audio_track.clone(),
+            state_tx,
+            sequence_number: 0,
+            audio_sequence_number: 0,
+            ssrc: rand::random::<u32>(),
+            audio_ssrc: rand::random::<u32>(),
+            rtcp_abort_handle: Some(rtcp_task.abort_handle()),
+            playout_delay_id,
+            client_caps: crate::webrtc::ClientCapabilities::from_sdp(&local_desc.sdp),
+            video_codec: VideoCodecType::H264
+        };
         self.connections.write().insert(connection_id.clone(), internal_conn);
         self.source_connections.write().entry(source_id.to_string()).or_insert_with(Vec::new).push(connection_id.clone());
-        Ok((sdp_answer, PeerConnectionHandle { connection_id: connection_id.clone(), source_id: source_id.to_string(), peer_connection, video_track, state_rx, ice_candidate_rx: ice_rx, sequence_number: 0, timestamp: 0, ssrc: rand::random::<u32>(), playout_delay_id }))
+        Ok((sdp_answer, PeerConnectionHandle {
+            connection_id: connection_id.clone(),
+            source_id: source_id.to_string(),
+            peer_connection,
+            video_track,
+            audio_track,
+            state_rx,
+            ice_candidate_rx: ice_rx,
+            sequence_number: 0,
+            audio_sequence_number: 0,
+            timestamp: 0,
+            audio_timestamp: 0,
+            ssrc: rand::random::<u32>(),
+            audio_ssrc: rand::random::<u32>(),
+            playout_delay_id
+        }))
     }
 
     fn h264_fmtp_line(&self, source_id: &str) -> Option<String> {
@@ -454,6 +514,37 @@ impl PeerConnectionManager {
         }
         if let Some(conn) = self.connections.write().get_mut(connection_id) { conn.sequence_number = sequence_number; }
         Ok(true)
+    }
+
+    pub async fn broadcast_audio(&self, connection_ids: Vec<String>, timestamp: u32, payload: &Bytes) -> Result<usize> {
+        if connection_ids.is_empty() { return Ok(0); }
+        let mut sent_count = 0;
+        for conn_id in connection_ids {
+            if self.send_audio_packet(&conn_id, timestamp, payload).await? {
+                sent_count += 1;
+            }
+        }
+        Ok(sent_count)
+    }
+
+    async fn send_audio_packet(&self, connection_id: &str, timestamp: u32, payload: &Bytes) -> Result<bool> {
+        let (track, mut sequence_number, ssrc) = {
+            let mut connections = self.connections.write();
+            let conn = match connections.get_mut(connection_id) { Some(c) => c, None => return Ok(false) };
+            (Arc::clone(&conn.audio_track), conn.audio_sequence_number, conn.audio_ssrc)
+        };
+        let header = webrtc::rtp::header::Header {
+            version: 2, marker: true, payload_type: 111, // Opus payload type
+            sequence_number, timestamp, ssrc, ..Default::default()
+        };
+        let packet = RtpPacket { header, payload: payload.clone() };
+        if track.write_rtp(&packet).await.is_ok() {
+            sequence_number = sequence_number.wrapping_add(1);
+            if let Some(conn) = self.connections.write().get_mut(connection_id) { conn.audio_sequence_number = sequence_number; }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     pub async fn add_ice_candidate(&self, connection_id: &str, candidate: IceCandidate) -> Result<()> {

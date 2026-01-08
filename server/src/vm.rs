@@ -666,7 +666,7 @@ pub async fn get_mdns_handler() -> impl IntoResponse {
 }
 
 pub async fn enable_mdns_handler() -> impl IntoResponse {
-    let cmd = format!("cp -f {} {} && {} start", AVAHI_BACKUP_SCRIPT, AVAHI_SCRIPT, AVAHI_SCRIPT);
+    let cmd = format!("cp -f {} {} && {} restart", AVAHI_BACKUP_SCRIPT, AVAHI_SCRIPT, AVAHI_SCRIPT);
     match Command::new("sh").arg("-c").arg(cmd).status().await {
         Ok(s) if s.success() => StatusCode::OK,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -786,6 +786,13 @@ pub async fn set_hostname_handler(Json(req): Json<SetHostnameReq>) -> impl IntoR
     if let Err(e) = Command::new("hostname").arg(hostname).status().await {
         warn!("Failed to set hostname: {}", e);
     }
+
+    // Restart mDNS if enabled to reflect the new hostname
+    if std::path::Path::new(AVAHI_PID_FILE).exists() {
+        info!("Restarting mDNS due to hostname change to {}", hostname);
+        let _ = enable_mdns_handler().await;
+    }
+
     StatusCode::OK
 }
 
