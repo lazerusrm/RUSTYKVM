@@ -452,7 +452,8 @@ async fn main() {
         let https_addr = bind_addr(config.port.https);
         let http_addr = bind_addr(config.port.http);
 
-        let tls_config = match RustlsConfig::from_pem_file(&config.cert.crt, &config.cert.key).await {
+        let tls_config = match RustlsConfig::from_pem_file(&config.cert.crt, &config.cert.key).await
+        {
             Ok(cfg) => cfg,
             Err(e) => {
                 error!(
