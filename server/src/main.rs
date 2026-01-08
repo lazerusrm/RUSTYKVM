@@ -96,6 +96,14 @@ use crate::vm::{
 use axum_server::tls_rustls::RustlsConfig;
 use std::net::SocketAddr;
 
+/// Parse a socket address from port, exiting on failure.
+fn bind_addr(port: u16) -> SocketAddr {
+    format!("0.0.0.0:{}", port).parse().unwrap_or_else(|e| {
+        error!("Invalid port {}: {}", port, e);
+        std::process::exit(1);
+    })
+}
+
 // Shared application state
 #[cfg(target_os = "linux")]
 pub struct AppState {
@@ -174,12 +182,14 @@ async fn main() {
             config.turn.turn_cred.clone(),
         );
     }
-    let webrtc_config = webrtc_config_builder.build()
-        .expect("Failed to build WebRTC config - verify STUN/TURN server settings in configuration file and ensure they are properly formatted");
+    let webrtc_config = webrtc_config_builder
+        .build()
+        .expect("invalid WebRTC config");
 
     let webrtc_manager = Arc::new(
-        PeerConnectionManager::new(webrtc_config).await
-            .expect("Failed to initialize WebRTC peer connection manager - check network configuration, firewall settings, and ICE server connectivity")
+        PeerConnectionManager::new(webrtc_config)
+            .await
+            .expect("WebRTC init failed"),
     );
     let whep_endpoint = Arc::new(WhepEndpoint::new(webrtc_manager.clone()));
 
@@ -439,33 +449,12 @@ async fn main() {
 
     // 5. Start Server
     if config.proto == "https" {
-        let https_addr: SocketAddr = match format!("0.0.0.0:{}", config.port.https).parse() {
-            Ok(addr) => addr,
-            Err(e) => {
-                error!(
-                    "Failed to parse HTTPS socket address with port {}: {}",
-                    config.port.https, e
-                );
-                std::process::exit(1);
-            }
-        };
-        let http_addr: SocketAddr = match format!("0.0.0.0:{}", config.port.http).parse() {
-            Ok(addr) => addr,
-            Err(e) => {
-                error!(
-                    "Failed to parse HTTP socket address with port {}: {}",
-                    config.port.http, e
-                );
-                std::process::exit(1);
-            }
-        };
+        let https_addr = bind_addr(config.port.https);
+        let http_addr = bind_addr(config.port.http);
 
         let tls_config = RustlsConfig::from_pem_file(&config.cert.crt, &config.cert.key)
             .await
-            .expect(&format!(
-                "Failed to load TLS certificates from cert='{}' key='{}'",
-                config.cert.crt, config.cert.key
-            ));
+            .expect("failed to load TLS certs");
 
         let redirect_app = Router::new().fallback(
             move |host: axum::http::HeaderMap, uri: axum::http::Uri| async move {
@@ -490,10 +479,10 @@ async fn main() {
         tokio::spawn(async move {
             let listener = tokio::net::TcpListener::bind(&http_addr)
                 .await
-                .expect(&format!("Failed to bind HTTP listener to {}", http_addr));
+                .expect("HTTP bind failed");
             axum::serve(listener, redirect_app)
                 .await
-                .expect("HTTP redirect server failed");
+                .expect("HTTP redirect failed");
         });
 
         info!("Server listening on {} (HTTPS)", https_addr);
@@ -507,12 +496,12 @@ async fn main() {
             .handle(handle)
             .serve(app.into_make_service())
             .await
-            .expect(&format!("Failed to start HTTPS server on {}", https_addr));
+            .expect("HTTPS server failed");
     } else {
-        let http_addr = format!("0.0.0.0:{}", config.port.http);
+        let http_addr = bind_addr(config.port.http);
         let listener = tokio::net::TcpListener::bind(&http_addr)
             .await
-            .expect(&format!("Failed to bind HTTP listener to {}", http_addr));
+            .expect("HTTP bind failed");
         info!("Server listening on {} (HTTP)", http_addr);
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal())
@@ -590,20 +579,23 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
     let mut interval = tokio::time::interval(Duration::from_millis(33));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let (w, h, q, f) = {
-            let c = state.screen_config.read();
-            (c.width, c.height, c.quality, c.fps)
+        let (width, height, quality, fps) = {
+            let cfg = state.screen_config.read();
+            (cfg.width, cfg.height, cfg.quality, cfg.fps)
         };
         interval.tick().await;
         if state.tx_mjpeg.receiver_count() > 0 {
-            let s = state.clone();
-            if let Ok(Ok(f)) = tokio::task::spawn_blocking(move || s.kvm.get_mjpeg(w, h, q)).await {
-                let _ = state.tx_mjpeg.send(f.into_bytes());
+            let kvm_state = state.clone();
+            if let Ok(Ok(frame)) =
+                tokio::task::spawn_blocking(move || kvm_state.kvm.get_mjpeg(width, height, quality))
+                    .await
+            {
+                let _ = state.tx_mjpeg.send(frame.into_bytes());
             }
         }
-        let d = Duration::from_secs_f64(1.0 / f as f64);
-        if interval.period() != d {
-            interval = tokio::time::interval(d);
+        let frame_interval = Duration::from_secs_f64(1.0 / fps as f64);
+        if interval.period() != frame_interval {
+            interval = tokio::time::interval(frame_interval);
         }
     }
 }
@@ -612,8 +604,8 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
 async fn h264_hardware_loop(state: Arc<AppState>) {
     set_realtime_priority();
     {
-        let c = state.screen_config.read();
-        state.kvm.set_h264_gop(c.gop);
+        let cfg = state.screen_config.read();
+        state.kvm.set_h264_gop(cfg.gop);
     }
     state.kvm.set_frame_detect(1);
     let mut interval = tokio::time::interval(Duration::from_millis(33));
@@ -621,33 +613,43 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
     let mut pts = 0u64;
     let start_time = std::time::Instant::now();
     loop {
-        let (w, h, b, f) = {
-            let c = state.screen_config.read();
-            (c.width, c.height, c.bitrate, c.fps)
+        let (width, height, bitrate, fps) = {
+            let cfg = state.screen_config.read();
+            (cfg.width, cfg.height, cfg.bitrate, cfg.fps)
         };
         interval.tick().await;
         if state.webrtc.total_connection_count() > 0 || state.tx_h264.receiver_count() > 0 {
-            let s = state.clone();
-            if let Ok(Ok(fd)) = tokio::task::spawn_blocking(move || s.kvm.get_h264(w, h, b)).await {
-                let d = fd.into_bytes();
-                let is_kf = d.len() > 0 && (d[0] & 0x1F == 7 || (d.len() > 4 && d[4] & 0x1F == 7));
-                let ts = start_time.elapsed().as_micros() as u64;
-                let pkts = Arc::new(crate::webrtc::transport::packetize_h264_optimized(&d));
-                let hf = H264Frame {
-                    is_keyframe: is_kf,
-                    timestamp: ts,
-                    packets: pkts.clone(),
-                    raw_data: d,
+            let kvm_state = state.clone();
+            if let Ok(Ok(frame_result)) =
+                tokio::task::spawn_blocking(move || kvm_state.kvm.get_h264(width, height, bitrate))
+                    .await
+            {
+                let frame_data = frame_result.into_bytes();
+                let is_keyframe = !frame_data.is_empty()
+                    && (frame_data[0] & 0x1F == 7
+                        || (frame_data.len() > 4 && frame_data[4] & 0x1F == 7));
+                let timestamp = start_time.elapsed().as_micros() as u64;
+                let packets = Arc::new(crate::webrtc::transport::packetize_h264_optimized(
+                    &frame_data,
+                ));
+                let h264_frame = H264Frame {
+                    is_keyframe,
+                    timestamp,
+                    packets: packets.clone(),
+                    raw_data: frame_data,
                 };
-                let _ = state.tx_h264.send(hf);
-                let cids = state.webrtc.get_source_connections("default");
-                let _ = state.webrtc.broadcast_frame(cids, pts as u32, &pkts).await;
+                let _ = state.tx_h264.send(h264_frame);
+                let conn_ids = state.webrtc.get_source_connections("default");
+                let _ = state
+                    .webrtc
+                    .broadcast_frame(conn_ids, pts as u32, &packets)
+                    .await;
                 pts = pts.wrapping_add(3000);
             }
         }
-        let d = Duration::from_secs_f64(1.0 / f as f64);
-        if interval.period() != d {
-            interval = tokio::time::interval(d);
+        let frame_interval = Duration::from_secs_f64(1.0 / fps as f64);
+        if interval.period() != frame_interval {
+            interval = tokio::time::interval(frame_interval);
         }
     }
 }
@@ -819,24 +821,25 @@ async fn health_check_handler() -> impl IntoResponse {
 }
 
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
-    const HEARTBEAT: u8 = 0;
-    const KEYBOARD: u8 = 1;
-    const MOUSE: u8 = 2;
+    const MSG_HEARTBEAT: u8 = 0;
+    const MSG_KEYBOARD: u8 = 1;
+    const MSG_MOUSE: u8 = 2;
+
     while let Some(Ok(msg)) = socket.recv().await {
-        if let Message::Binary(d) = msg {
-            if d.is_empty() {
+        if let Message::Binary(data) = msg {
+            if data.is_empty() {
                 continue;
             }
-            let (mt, p) = (d[0], &d[1..]);
-            match mt {
-                HEARTBEAT => {}
-                KEYBOARD => {
-                    let mut h = state.hid.lock().await;
-                    let _ = h.send_keyboard(p).await;
+            let (msg_type, payload) = (data[0], &data[1..]);
+            match msg_type {
+                MSG_HEARTBEAT => {}
+                MSG_KEYBOARD => {
+                    let mut hid = state.hid.lock().await;
+                    let _ = hid.send_keyboard(payload).await;
                 }
-                MOUSE => {
-                    let mut h = state.hid.lock().await;
-                    let _ = h.send_mouse(p).await;
+                MSG_MOUSE => {
+                    let mut hid = state.hid.lock().await;
+                    let _ = hid.send_mouse(payload).await;
                 }
                 _ => {}
             }
@@ -845,8 +848,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 
     // Connection closed, release all keys and buttons to prevent "sticky keys"
     debug!("WebSocket closed, releasing HID inputs");
-    let mut h = state.hid.lock().await;
-    let _ = h.send_keyboard(&[0u8; 8]).await;
-    let _ = h.send_mouse(&[0u8; 4]).await;
-    let _ = h.send_mouse(&[0u8; 6]).await;
+    let mut hid = state.hid.lock().await;
+    let _ = hid.send_keyboard(&[0u8; 8]).await;
+    let _ = hid.send_mouse(&[0u8; 4]).await;
+    let _ = hid.send_mouse(&[0u8; 6]).await;
 }

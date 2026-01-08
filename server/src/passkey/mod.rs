@@ -1,8 +1,9 @@
-pub mod models;
-pub mod handlers;
-pub mod recovery;
-pub mod qr;
+pub mod cbor;
 pub mod crypto;
+pub mod handlers;
+pub mod models;
+pub mod qr;
+pub mod recovery;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;

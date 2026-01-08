@@ -1,5 +1,7 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+use super::cbor::{read_bytes, read_int};
 
 pub const PASSKEYS_FILE: &str = "/etc/kvm/passkeys.json";
 pub const RECOVERY_CODES_FILE: &str = "/etc/kvm/recovery_codes.json";
@@ -25,111 +27,28 @@ pub struct CoseKey {
 }
 
 impl CoseKey {
-    pub fn from_cbor(cbor_data: &[u8]) -> Option<Self> {
-        if cbor_data.is_empty() {
+    pub fn from_cbor(data: &[u8]) -> Option<Self> {
+        if data.is_empty() || data[0] != 0xa1 {
             return None;
         }
 
-        fn read_int(data: &[u8], offset: &mut usize) -> Option<i64> {
-            if *offset >= data.len() {
-                return None;
-            }
-            let first = data[*offset];
-            *offset += 1;
-            match first {
-                0..=23 => Some(first as i64),
-                24 => {
-                    if *offset >= data.len() { None } else {
-                        let val = data[*offset] as i64;
-                        *offset += 1;
-                        Some(val)
-                    }
-                }
-                25 => {
-                    if *offset + 1 >= data.len() { None } else {
-                        let val = u16::from_be_bytes([data[*offset], data[*offset + 1]]) as i64;
-                        *offset += 2;
-                        Some(val)
-                    }
-                }
-                26 => {
-                    if *offset + 3 >= data.len() { None } else {
-                        let val = u32::from_be_bytes([data[*offset], data[*offset + 1], data[*offset + 2], data[*offset + 3]]) as i64;
-                        *offset += 4;
-                        Some(val)
-                    }
-                }
-                27 => {
-                    if *offset + 7 >= data.len() { None } else {
-                        let val = u64::from_be_bytes([
-                            data[*offset], data[*offset + 1], data[*offset + 2], data[*offset + 3],
-                            data[*offset + 4], data[*offset + 5], data[*offset + 6], data[*offset + 7]
-                        ]) as i64;
-                        *offset += 8;
-                        Some(val)
-                    }
-                }
-                _ => None,
-            }
-        }
-
-        fn read_bytes(data: &[u8], offset: &mut usize) -> Option<Vec<u8>> {
-            if *offset >= data.len() {
-                return None;
-            }
-            let first = data[*offset];
-            *offset += 1;
-            match first {
-                0..=23 => {
-                    let len = first as usize;
-                    if *offset + len > data.len() { return None; }
-                    let result = data[*offset..*offset + len].to_vec();
-                    *offset += len;
-                    Some(result)
-                }
-                64 => None,
-                65 => {
-                    if *offset >= data.len() { return None; }
-                    let len = data[*offset] as usize;
-                    *offset += 1;
-                    if *offset + len > data.len() { return None; }
-                    let result = data[*offset..*offset + len].to_vec();
-                    *offset += len;
-                    Some(result)
-                }
-                _ => None,
-            }
-        }
-
-        let mut offset = 0;
-
-        if data[offset] != 0xa1 {
-            return None;
-        }
-        offset += 1;
-
+        let mut offset = 1;
         let mut map = std::collections::HashMap::new();
 
         while offset < data.len() {
-            let key = match read_int(data, &mut offset) {
-                Some(k) => k,
-                None => break,
-            };
-            let value = match read_bytes(data, &mut offset) {
-                Some(v) => v,
-                None => break,
-            };
+            let key = read_int(data, &mut offset)?;
+            let value = read_bytes(data, &mut offset)?;
             map.insert(key, value);
-
-            if offset >= data.len() {
-                break;
-            }
         }
 
         let kty = map.get(&1).cloned().unwrap_or_default();
         let alg = map.get(&3).cloned().unwrap_or_default();
-        let kty_val = if !kty.is_empty() { kty[0] as u8 } else { 0 };
-        let alg_val = if !alg.is_empty() { i32::from_be_bytes([alg.get(0).copied().unwrap_or(0), alg.get(1).copied().unwrap_or(0), alg.get(2).copied().unwrap_or(0), alg.get(3).copied().unwrap_or(0)]) } else { 0 };
+        let kty_val = kty.first().copied().unwrap_or(0);
+        let alg_val = if alg.len() >= 4 {
+            i32::from_be_bytes([alg[0], alg[1], alg[2], alg[3]])
+        } else {
+            0
+        };
 
         let n = map.get(&-1).cloned().unwrap_or_default();
         let e = map.get(&-2).cloned().unwrap_or_default();

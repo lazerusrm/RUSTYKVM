@@ -1,120 +1,42 @@
 use axum::{
-    extract::{State, Json, Query},
+    extract::{Json, Query, State},
+    http::{header, StatusCode},
     response::IntoResponse,
-    http::{StatusCode, header},
 };
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::process::Command;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use serde::{Deserialize, Serialize};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
-use crate::AppState;
+use super::cbor::{read_bytes, read_int};
+use crate::auth::{get_account, log_audit_event};
 use crate::passkey::{
+    crypto::AuthenticatorData,
     models::{
-        PasskeyStorage, SetupResponse, VerifyResponse, RecoverResponse,
-        RecoveryCodesResponse, LoginChallengeResponse, PASSKEYS_FILE, RECOVERY_CODES_FILE,
-        CoseKey,
+        CoseKey, LoginChallengeResponse, RecoverResponse, RecoveryCodesResponse, SetupResponse,
+        VerifyResponse, PASSKEYS_FILE, RECOVERY_CODES_FILE,
     },
-    recovery::{generate_recovery_codes, save_recovery_codes, validate_and_consume_code, format_recovery_codes_for_display},
     qr::generate_qr_code_simple,
-    crypto::{AuthenticatorData},
+    recovery::{
+        format_recovery_codes_for_display, generate_recovery_codes, save_recovery_codes,
+        validate_and_consume_code,
+    },
     PasskeyState,
 };
-use crate::system::capabilities::{Capabilities, detect_capabilities};
-use crate::auth::{get_account, log_audit_event};
+use crate::system::capabilities::Capabilities;
+use crate::AppState;
 
 fn extract_public_key_from_attestation(attestation_cbor: &[u8]) -> Option<CoseKey> {
-    if attestation_cbor.len() < 37 {
+    if attestation_cbor.len() < 37 || attestation_cbor[0] != 0xa3 {
         return None;
     }
 
-    let mut offset = 0;
-
-    fn read_int(data: &[u8], offset: &mut usize) -> Option<i64> {
-        if *offset >= data.len() {
-            return None;
-        }
-        let first = data[*offset];
-        *offset += 1;
-        match first {
-            0..=23 => Some(first as i64),
-            24 => {
-                if *offset >= data.len() { None } else {
-                    let val = data[*offset] as i64;
-                    *offset += 1;
-                    Some(val)
-                }
-            }
-            25 => {
-                if *offset + 1 >= data.len() { None } else {
-                    let val = u16::from_be_bytes([data[*offset], data[*offset + 1]]) as i64;
-                    *offset += 2;
-                    Some(val)
-                }
-            }
-            26 => {
-                if *offset + 3 >= data.len() { None } else {
-                    let val = u32::from_be_bytes([data[*offset], data[*offset + 1], data[*offset + 2], data[*offset + 3]]) as i64;
-                    *offset += 4;
-                    Some(val)
-                }
-            }
-            27 => {
-                if *offset + 7 >= data.len() { None } else {
-                    let val = u64::from_be_bytes([
-                        data[*offset], data[*offset + 1], data[*offset + 2], data[*offset + 3],
-                        data[*offset + 4], data[*offset + 5], data[*offset + 6], data[*offset + 7]
-                    ]) as i64;
-                    *offset += 8;
-                    Some(val)
-                }
-            }
-            _ => None,
-        }
-    }
-
-    fn read_bytes(data: &[u8], offset: &mut usize) -> Option<Vec<u8>> {
-        if *offset >= data.len() {
-            return None;
-        }
-        let first = data[*offset];
-        *offset += 1;
-        match first {
-            0..=23 => {
-                let len = first as usize;
-                if *offset + len > data.len() { return None; }
-                let result = data[*offset..*offset + len].to_vec();
-                *offset += len;
-                Some(result)
-            }
-            64 => None,
-            65 => {
-                if *offset >= data.len() { return None; }
-                let len = data[*offset] as usize;
-                *offset += 1;
-                if *offset + len > data.len() { return None; }
-                let result = data[*offset..*offset + len].to_vec();
-                *offset += len;
-                Some(result)
-            }
-            _ => None,
-        }
-    }
-
-    if attestation_cbor[0] != 0xa3 {
-        return None;
-    }
-    offset += 1;
-
+    let mut offset = 1;
     let mut auth_data_offset = None;
-    let mut att_stmt_offset = None;
 
     while offset < attestation_cbor.len() {
-        let key = match read_int(attestation_cbor, &mut offset) {
-            Some(k) => k,
-            None => break,
-        };
+        let key = read_int(attestation_cbor, &mut offset)?;
 
         match key {
             2 => {
@@ -122,24 +44,13 @@ fn extract_public_key_from_attestation(attestation_cbor: &[u8]) -> Option<CoseKe
                     auth_data_offset = Some(offset - value.len() - 1);
                 }
             }
-            3 => {
-                att_stmt_offset = Some(offset);
-            }
             _ => {
                 let _ = read_bytes(attestation_cbor, &mut offset);
             }
         }
-
-        if offset >= attestation_cbor.len() {
-            break;
-        }
     }
 
-    let auth_data = match auth_data_offset {
-        Some(off) => &attestation_cbor[off..],
-        None => return None,
-    };
-
+    let auth_data = &attestation_cbor[auth_data_offset?..];
     if auth_data.len() < 37 {
         return None;
     }
@@ -149,12 +60,10 @@ fn extract_public_key_from_attestation(attestation_cbor: &[u8]) -> Option<CoseKe
 
     let mut pk_offset = 37;
     if has_attested_credential {
-        let credential_id_len = if auth_data.len() > pk_offset + 16 {
-            16
-        } else {
+        if auth_data.len() <= pk_offset + 16 {
             return None;
-        };
-        pk_offset += credential_id_len;
+        }
+        pk_offset += 16;
     }
 
     if pk_offset >= auth_data.len() {
@@ -299,10 +208,6 @@ async fn get_funnel_url() -> Option<String> {
     }
 }
 
-async fn check_passkey_exists() -> bool {
-    tokio::fs::metadata(PASSKEYS_FILE).await.is_ok()
-}
-
 pub async fn passkey_setup_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PasskeySetupRequest>,
@@ -405,42 +310,6 @@ pub async fn passkey_setup_handler(
         qr_code,
         expires_at: expires_at.to_rfc3339(),
     })
-}
-
-async fn enable_tailscale_funnel() -> bool {
-    let output = Command::new("tailscale")
-        .args(&["serve", "https", "localhost:8443"])
-        .output()
-        .await;
-
-    match output {
-        Ok(o) => o.status.success(),
-        Err(_) => false,
-    }
-}
-
-async fn wait_for_funnel_ready(max_seconds: u64) -> Option<String> {
-    for _ in 0..max_seconds {
-        let status = Command::new("tailscale")
-            .args(&["serve", "status"])
-            .output()
-            .await
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok());
-
-        if let Some(s) = status {
-            if let Some(start) = s.find("https://") {
-                let end = s[start..].find(|c| c == '\n' || c == ' ').unwrap_or(s[start..].len());
-                let url = &s[start..start + end];
-                if url.contains(".ts.net") {
-                    return Some(url.to_string());
-                }
-            }
-        }
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-    }
-    None
 }
 
 fn generate_random_challenge() -> String {
