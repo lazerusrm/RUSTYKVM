@@ -173,6 +173,48 @@ jobs:
             fi
           done
 
+          # Create default config directory and file
+          sudo mkdir -p /mnt/nanokvm/etc/kvm
+          sudo tee /mnt/nanokvm/etc/kvm/config.yaml > /dev/null << 'CONFIGEOF'
+          proto: http
+          port:
+            http: 80
+            https: 443
+          cert:
+            crt: /kvmapp/server.crt
+            key: /kvmapp/server.key
+          logger:
+            level: info
+            file: /var/log/nanokvm.log
+          authentication: enable
+          stun: stun.l.google.com:19302
+          CONFIGEOF
+          sudo sed -i 's/^          //' /mnt/nanokvm/etc/kvm/config.yaml
+
+          # Generate self-signed TLS certificate for HTTPS
+          echo "Generating self-signed TLS certificate..."
+          openssl req -x509 -newkey rsa:2048 \
+            -keyout /tmp/server.key -out /tmp/server.crt \
+            -days 365 -nodes -subj "/CN=nanokvm/O=NanoKVM-RS" 2>/dev/null
+          sudo cp /tmp/server.crt /mnt/nanokvm/kvmapp/server.crt
+          sudo cp /tmp/server.key /mnt/nanokvm/kvmapp/server.key
+
+          # Create default account file (admin/admin)
+          sudo tee /mnt/nanokvm/etc/kvm/account > /dev/null << 'ACCOUNTEOF'
+          admin
+          admin
+          ACCOUNTEOF
+          sudo sed -i 's/^          //' /mnt/nanokvm/etc/kvm/account
+
+          # Ensure SSH is enabled (dropbear) - enable the init script if disabled
+          if [ -f /mnt/nanokvm/etc/init.d/S50dropbear.disabled ]; then
+            sudo mv /mnt/nanokvm/etc/init.d/S50dropbear.disabled /mnt/nanokvm/etc/init.d/S50dropbear
+          fi
+          # Also check for sshd
+          if [ -f /mnt/nanokvm/etc/init.d/S50sshd.disabled ]; then
+            sudo mv /mnt/nanokvm/etc/init.d/S50sshd.disabled /mnt/nanokvm/etc/init.d/S50sshd
+          fi
+
           # Create init script using printf to avoid YAML/heredoc issues
           sudo tee /mnt/nanokvm/etc/init.d/S95nanokvm > /dev/null << 'INITSCRIPT'
           #!/bin/sh
@@ -183,10 +225,27 @@ jobs:
 
           case "$1" in
             start)
-              echo "Starting NanoKVM-RS..."
+              echo "Starting NanoKVM-RS..." | tee -a $LOGFILE
+              echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> $LOGFILE
               cd /kvmapp
+              # Check if binary exists and is executable
+              if [ ! -x $DAEMON ]; then
+                echo "ERROR: $DAEMON not found or not executable" | tee -a $LOGFILE
+                exit 1
+              fi
+              # List libraries for debugging
+              ls -la /kvmapp/dl_lib/ >> $LOGFILE 2>&1
+              # Start the daemon
               $DAEMON >> $LOGFILE 2>&1 &
               echo $! > $PIDFILE
+              sleep 2
+              # Check if it's still running
+              if kill -0 $(cat $PIDFILE) 2>/dev/null; then
+                echo "NanoKVM-RS started successfully (PID: $(cat $PIDFILE))" | tee -a $LOGFILE
+              else
+                echo "ERROR: NanoKVM-RS failed to start. Check $LOGFILE" | tee -a $LOGFILE
+                cat $LOGFILE | tail -50
+              fi
               ;;
             stop)
               if [ -f $PIDFILE ]; then
