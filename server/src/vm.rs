@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 use crate::AppState;
 use futures::{SinkExt, StreamExt};
+use tokio::process::Command;
 
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
@@ -203,6 +204,7 @@ const BOOT_HOSTNAME: &str = "/boot/hostname";
 const WEB_TITLE_FILE: &str = "/etc/kvm/web-title";
 const AUTOSTART_DIRECTORY: &str = "/etc/kvm/autostart";
 const HDMI_DISABLE_FILE: &str = "/etc/kvm/hdmi_disable";
+const INITTAB_PATH: &str = "/etc/inittab";
 
 fn sanitize_file_name(file_name: &str) -> Option<String> {
     let sanitized: String = file_name
@@ -230,7 +232,7 @@ fn validate_script_path(base_dir: &str, file_name: &str) -> Option<std::path::Pa
 }
 
 async fn run_shell_command(cmd: &str) -> bool {
-    match std::process::Command::new("sh").arg("-c").arg(cmd).status().await {
+    match Command::new("sh").arg("-c").arg(cmd).status().await {
         Ok(status) => status.success(),
         Err(e) => {
             warn!("Failed to execute command '{}': {}", cmd, e);
@@ -309,14 +311,14 @@ pub async fn set_tls_handler(
         config.cert.crt = "/etc/kvm/server.crt".to_string();
         config.cert.key = "/etc/kvm/server.key".to_string();
         // Generate cert if missing? Go uses utils.GenerateCert()
-        let _ = std::process::Command::new("sh").arg("-c").arg("/kvmapp/system/gen-cert.sh").status();
+        let _ = Command::new("sh").arg("-c").arg("/kvmapp/system/gen-cert.sh").status().await;
     }
 
     match config.save().await {
         Ok(_) => {
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                let _ = std::process::Command::new("sh").arg("-c").arg("/etc/init.d/S95nanokvm restart").status();
+                let _ = Command::new("sh").arg("-c").arg("/etc/init.d/S95nanokvm restart").status().await;
             });
             StatusCode::OK.into_response()
         }
@@ -613,7 +615,7 @@ pub async fn run_script_handler(Json(req): Json<RunScriptReq>) -> impl IntoRespo
     if req.name.to_lowercase().ends_with(".py") { command = format!("python {}", command); }
 
     if req.script_type == "foreground" {
-        match std::process::Command::new("sh").arg("-c").arg(command).output() {
+        match Command::new("sh").arg("-c").arg(command).output().await {
             Ok(output) => {
                 let log = String::from_utf8_lossy(&output.stdout).to_string() + &String::from_utf8_lossy(&output.stderr);
                 Json(RunScriptRsp { log }).into_response()
@@ -621,7 +623,7 @@ pub async fn run_script_handler(Json(req): Json<RunScriptReq>) -> impl IntoRespo
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     } else {
-        tokio::spawn(async move { let _ = std::process::Command::new("sh").arg("-c").arg(command).status(); });
+        tokio::spawn(async move { let _ = Command::new("sh").arg("-c").arg(command).status().await; });
         Json(RunScriptRsp { log: "Started in background".to_string() }).into_response()
     }
 }
@@ -652,7 +654,7 @@ pub async fn update_virtual_device_handler(State(state): State<Arc<AppState>>, J
     let cmds = if !exists { mount_cmds } else { unmount_commands };
     {
         let _hid = state.hid.lock().await;
-        for cmd in cmds { let _ = std::process::Command::new("sh").arg("-c").arg(cmd).status(); }
+        for cmd in cmds { let _ = Command::new("sh").arg("-c").arg(cmd).status().await; }
     }
     let on = std::path::Path::new(device_path).exists();
     Json(UpdateVirtualDeviceRsp { on }).into_response()
@@ -665,7 +667,7 @@ pub async fn get_mdns_handler() -> impl IntoResponse {
 
 pub async fn enable_mdns_handler() -> impl IntoResponse {
     let cmd = format!("cp -f {} {} && {} start", AVAHI_BACKUP_SCRIPT, AVAHI_SCRIPT, AVAHI_SCRIPT);
-    match std::process::Command::new("sh").arg("-c").arg(cmd).status() {
+    match Command::new("sh").arg("-c").arg(cmd).status().await {
         Ok(s) if s.success() => StatusCode::OK,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -674,7 +676,7 @@ pub async fn enable_mdns_handler() -> impl IntoResponse {
 pub async fn disable_mdns_handler() -> impl IntoResponse {
     if let Ok(pid) = tokio::fs::read_to_string(AVAHI_PID_FILE).await {
         let cmd = format!("kill -9 {} && rm -f {} {}", pid.trim(), AVAHI_PID_FILE, AVAHI_SCRIPT);
-        match std::process::Command::new("sh").arg("-c").arg(cmd).status() {
+        match Command::new("sh").arg("-c").arg(cmd).status().await {
             Ok(s) if s.success() => StatusCode::OK,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -687,14 +689,14 @@ pub async fn get_ssh_handler() -> impl IntoResponse {
 }
 
 pub async fn enable_ssh_handler() -> impl IntoResponse {
-    match std::process::Command::new("sh").arg("-c").arg(format!("{} permanent_on", SSH_SCRIPT)).status() {
+    match Command::new("sh").arg("-c").arg(format!("{} permanent_on", SSH_SCRIPT)).status().await {
         Ok(s) if s.success() => StatusCode::OK,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
 pub async fn disable_ssh_handler() -> impl IntoResponse {
-    match std::process::Command::new("sh").arg("-c").arg(format!("{} permanent_off", SSH_SCRIPT)).status() {
+    match Command::new("sh").arg("-c").arg(format!("{} permanent_off", SSH_SCRIPT)).status().await {
         Ok(s) if s.success() => StatusCode::OK,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -728,6 +730,7 @@ pub async fn set_swap_handler(Json(req): Json<SetSwapReq>) -> impl IntoResponse 
 
 async fn enable_inittab_swap() -> tokio::io::Result<()> {
     let mut file = tokio::fs::OpenOptions::new().append(true).open(INITTAB_PATH).await?;
+    use tokio::io::AsyncWriteExt;
     file.write_all(format!("\nsi11::sysinit:/sbin/swapon {}", SWAP_FILE).as_bytes()).await?;
     Ok(())
 }
@@ -780,7 +783,7 @@ pub async fn set_hostname_handler(Json(req): Json<SetHostnameReq>) -> impl IntoR
 
     let _ = tokio::fs::write(ETC_HOSTNAME, hostname).await;
     let _ = tokio::fs::write(BOOT_HOSTNAME, hostname).await;
-    if let Err(e) = std::process::Command::new("hostname").arg(hostname).status() {
+    if let Err(e) = Command::new("hostname").arg(hostname).status().await {
         warn!("Failed to set hostname: {}", e);
     }
     StatusCode::OK
@@ -822,7 +825,7 @@ pub async fn delete_autostart_handler(Path(name): Path<String>) -> impl IntoResp
 }
 
 pub async fn reboot_handler() -> impl IntoResponse {
-    if let Err(e) = std::process::Command::new("reboot").status() {
+    if let Err(e) = Command::new("reboot").status().await {
         error!("Failed to execute reboot: {}", e);
     }
     StatusCode::OK

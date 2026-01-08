@@ -4,7 +4,7 @@ use axum::{
 };
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
-use std::process::Command;
+use tokio::process::Command;
 use tracing::{error, info};
 
 const SCRIPT_PATH: &str = "/etc/init.d/S98tailscaled";
@@ -45,7 +45,7 @@ pub struct LoginRsp {
 
 pub async fn tailscale_start_handler() -> impl IntoResponse {
     let cmd = format!("cp -f {} {} && {} start", SCRIPT_BACKUP_PATH, SCRIPT_PATH, SCRIPT_PATH);
-    match Command::new("sh").arg("-c").arg(cmd).status() {
+    match Command::new("sh").arg("-c").arg(cmd).status().await {
         Ok(s) if s.success() => StatusCode::OK,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -53,14 +53,14 @@ pub async fn tailscale_start_handler() -> impl IntoResponse {
 
 pub async fn tailscale_stop_handler() -> impl IntoResponse {
     let cmd = format!("{} stop && rm -f {}", SCRIPT_PATH, SCRIPT_PATH);
-    match Command::new("sh").arg("-c").arg(cmd).status() {
+    match Command::new("sh").arg("-c").arg(cmd).status().await {
         Ok(s) if s.success() => StatusCode::OK,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
 pub async fn tailscale_status_handler() -> impl IntoResponse {
-    let output = Command::new("sh").arg("-c").arg("tailscale status --json").output();
+    let output = Command::new("sh").arg("-c").arg("tailscale status --json").output().await;
     match output {
         Ok(out) => {
             let s = String::from_utf8_lossy(&out.stdout);
@@ -74,12 +74,27 @@ pub async fn tailscale_status_handler() -> impl IntoResponse {
 }
 
 pub async fn tailscale_login_handler() -> impl IntoResponse {
-    // This is more complex because it needs to read from stderr in real-time
-    // For now, let's implement a simple version
-    let output = Command::new("sh").arg("-c").arg("tailscale login --accept-dns=false --timeout=1m").output();
+    // We use tokio::process::Command to avoid blocking
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("tailscale login --accept-dns=false --timeout=1m")
+        .output()
+        .await;
+
     match output {
         Ok(out) => {
+            // Tailscale often puts the login URL in stderr
             let s = String::from_utf8_lossy(&out.stderr);
+            for line in s.lines() {
+                if line.contains("https://") {
+                    if let Some(url_idx) = line.find("https://") {
+                        let url = line[url_idx..].split_whitespace().next().unwrap_or_default();
+                        return Json(LoginRsp { url: url.to_string() }).into_response();
+                    }
+                }
+            }
+            // Sometimes it's in stdout too
+            let s = String::from_utf8_lossy(&out.stdout);
             for line in s.lines() {
                 if line.contains("https://") {
                     if let Some(url_idx) = line.find("https://") {
@@ -95,21 +110,21 @@ pub async fn tailscale_login_handler() -> impl IntoResponse {
 }
 
 pub async fn tailscale_up_handler() -> impl IntoResponse {
-    match Command::new("sh").arg("-c").arg("tailscale up --accept-dns=false").status() {
+    match Command::new("sh").arg("-c").arg("tailscale up --accept-dns=false").status().await {
         Ok(s) if s.success() => StatusCode::OK,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
 pub async fn tailscale_down_handler() -> impl IntoResponse {
-    match Command::new("sh").arg("-c").arg("tailscale down").status() {
+    match Command::new("sh").arg("-c").arg("tailscale down").status().await {
         Ok(s) if s.success() => StatusCode::OK,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
 pub async fn tailscale_logout_handler() -> impl IntoResponse {
-    match Command::new("sh").arg("-c").arg("tailscale logout").status() {
+    match Command::new("sh").arg("-c").arg("tailscale logout").status().await {
         Ok(s) if s.success() => StatusCode::OK,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -125,7 +140,7 @@ pub async fn tailscale_install_handler() -> impl IntoResponse {
 }
 
 pub async fn tailscale_uninstall_handler() -> impl IntoResponse {
-    let _ = Command::new("sh").arg("-c").arg(format!("{} stop", SCRIPT_PATH)).status();
+    let _ = Command::new("sh").arg("-c").arg(format!("{} stop", SCRIPT_PATH)).status().await;
     let _ = tokio::fs::remove_file(TAILSCALE_PATH).await;
     let _ = tokio::fs::remove_file(TAILSCALED_PATH).await;
     let _ = tokio::fs::remove_file(SCRIPT_PATH).await;
@@ -141,11 +156,14 @@ async fn perform_tailscale_install() -> anyhow::Result<()> {
     let bytes = resp.bytes().await?;
     tokio::fs::write(&tar_file, &bytes).await?;
 
-    // 2. Extract
-    let file = std::fs::File::open(&tar_file)?;
-    let tar = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(tar);
-    archive.unpack(WORKSPACE)?;
+    // 2. Extract (using spawn_blocking for long synchronous operation)
+    let tar_file_clone = tar_file.clone();
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&tar_file_clone)?;
+        let tar = flate2::read::GzDecoder::new(file);
+        let mut archive = tar::Archive::new(tar);
+        archive.unpack(WORKSPACE)
+    }).await??;
 
     // 3. Move binaries (finding them in the extracted dir)
     let mut entries = tokio::fs::read_dir(WORKSPACE).await?;
@@ -157,8 +175,8 @@ async fn perform_tailscale_install() -> anyhow::Result<()> {
             if ts.exists() && tsd.exists() {
                 tokio::fs::copy(&ts, TAILSCALE_PATH).await?;
                 tokio::fs::copy(&tsd, TAILSCALED_PATH).await?;
-                let _ = Command::new("chmod").arg("755").arg(TAILSCALE_PATH).status();
-                let _ = Command::new("chmod").arg("755").arg(TAILSCALED_PATH).status();
+                let _ = Command::new("chmod").arg("755").arg(TAILSCALE_PATH).status().await;
+                let _ = Command::new("chmod").arg("755").arg(TAILSCALED_PATH).status().await;
                 break;
             }
         }

@@ -73,9 +73,10 @@ pub async fn upload_image_handler(mut multipart: Multipart) -> impl IntoResponse
     while let Ok(Some(field)) = multipart.next_field().await {
         if let Some(file_name) = field.file_name() {
             let name = file_name.to_string();
-            if !name.to_lowercase().ends_with(".iso") {
+            let name_lower = name.to_lowercase();
+            if !name_lower.ends_with(".iso") && !name_lower.ends_with(".img") {
                 let _ = fs::remove_file(SENTINEL_PATH).await;
-                return (StatusCode::BAD_REQUEST, "Only .iso allowed").into_response();
+                return (StatusCode::BAD_REQUEST, "Only .iso and .img allowed").into_response();
             }
 
             let dest_path = Path::new(DATA_DIR).join(&name);
@@ -115,7 +116,7 @@ pub async fn upload_image_handler(mut multipart: Multipart) -> impl IntoResponse
                 }
             }
 
-            if !is_iso9660(&dest_path).await {
+            if name_lower.ends_with(".iso") && !is_iso9660(&dest_path).await {
                 let _ = fs::remove_file(SENTINEL_PATH).await;
                 let _ = fs::remove_file(&dest_path).await;
                 return (StatusCode::BAD_REQUEST, "Invalid ISO image").into_response();
@@ -185,7 +186,7 @@ async fn perform_url_download(url: String, filename: String) -> anyhow::Result<(
         }
     }
 
-    if !is_iso9660(&dest_path).await {
+    if filename.to_lowercase().ends_with(".iso") && !is_iso9660(&dest_path).await {
         let _ = fs::remove_file(&dest_path).await;
         return Err(anyhow::anyhow!("Invalid ISO image downloaded"));
     }

@@ -435,4 +435,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
             }
         }
     }
+    
+    // Connection closed, release all keys and buttons to prevent "sticky keys"
+    debug!("WebSocket closed, releasing HID inputs");
+    let mut h = state.hid.lock().await;
+    let _ = h.send_keyboard(&[0u8; 8]).await;
+    let _ = h.send_mouse(&[0u8; 4]).await;
+    let _ = h.send_mouse(&[0u8; 6]).await;
 }
