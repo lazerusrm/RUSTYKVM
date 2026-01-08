@@ -128,6 +128,151 @@ jobs:
           # Wait for partitions
           sleep 2
 
+          # ============================================================
+          # FORENSIC ANALYSIS: Understand the base image completely
+          # ============================================================
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║           FORENSIC ANALYSIS OF BASE IMAGE                   ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+
+          echo "=== PARTITION TABLE ==="
+          sudo fdisk -l nanokvm-rs.img
+          echo ""
+
+          echo "=== PARTITION DETAILS ==="
+          sudo parted nanokvm-rs.img print 2>/dev/null || true
+          echo ""
+
+          echo "=== LOOP DEVICE PARTITIONS ==="
+          ls -la ${LOOP_DEV}* 2>/dev/null || echo "No partition devices found"
+          lsblk ${LOOP_DEV} 2>/dev/null || true
+          echo ""
+
+          echo "=== FILESYSTEM TYPES ==="
+          for part in ${LOOP_DEV}p*; do
+            if [ -b "$part" ]; then
+              echo "--- $part ---"
+              sudo file -s "$part"
+              sudo blkid "$part" 2>/dev/null || true
+            fi
+          done
+          echo ""
+
+          # Mount ALL partitions and examine them
+          echo "=== EXAMINING ALL PARTITIONS ==="
+          PART_NUM=1
+          for part in ${LOOP_DEV}p*; do
+            if [ -b "$part" ]; then
+              echo ""
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "PARTITION $PART_NUM: $part"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+              MOUNT_DIR="/mnt/part${PART_NUM}"
+              sudo mkdir -p "$MOUNT_DIR"
+
+              if sudo mount "$part" "$MOUNT_DIR" 2>/dev/null; then
+                echo "Mounted successfully"
+                echo ""
+                echo "--- Top-level contents ---"
+                ls -la "$MOUNT_DIR/"
+                echo ""
+
+                # Check for key directories
+                for dir in etc bin sbin usr kvmapp boot; do
+                  if [ -d "$MOUNT_DIR/$dir" ]; then
+                    echo "--- /$dir exists ---"
+                    ls -la "$MOUNT_DIR/$dir/" 2>/dev/null | head -20
+                    echo ""
+                  fi
+                done
+
+                # Check for init system clues
+                echo "--- Init system analysis ---"
+                if [ -f "$MOUNT_DIR/etc/inittab" ]; then
+                  echo "FOUND: /etc/inittab"
+                  cat "$MOUNT_DIR/etc/inittab"
+                  echo ""
+                fi
+
+                if [ -d "$MOUNT_DIR/etc/init.d" ]; then
+                  echo "FOUND: /etc/init.d/"
+                  ls -la "$MOUNT_DIR/etc/init.d/"
+                  echo ""
+                  # Show rcS if it exists
+                  if [ -f "$MOUNT_DIR/etc/init.d/rcS" ]; then
+                    echo "--- /etc/init.d/rcS contents ---"
+                    cat "$MOUNT_DIR/etc/init.d/rcS"
+                    echo ""
+                  fi
+                fi
+
+                if [ -d "$MOUNT_DIR/etc/systemd" ]; then
+                  echo "FOUND: systemd"
+                  ls -la "$MOUNT_DIR/etc/systemd/" 2>/dev/null
+                  echo ""
+                fi
+
+                if [ -f "$MOUNT_DIR/etc/rc.local" ]; then
+                  echo "FOUND: /etc/rc.local"
+                  cat "$MOUNT_DIR/etc/rc.local"
+                  echo ""
+                fi
+
+                # Look for NanoKVM startup
+                echo "--- Searching for NanoKVM/kvm startup references ---"
+                grep -r "NanoKVM\|nanokvm\|kvmapp" "$MOUNT_DIR/etc/" 2>/dev/null | head -30 || echo "No matches in /etc"
+                echo ""
+
+                # Check if this looks like rootfs
+                if [ -f "$MOUNT_DIR/etc/passwd" ]; then
+                  echo "This partition has /etc/passwd - likely rootfs candidate"
+                  echo "--- /etc/passwd ---"
+                  cat "$MOUNT_DIR/etc/passwd"
+                  echo ""
+                fi
+
+                # Check kvmapp specifically
+                if [ -d "$MOUNT_DIR/kvmapp" ]; then
+                  echo "--- /kvmapp contents ---"
+                  ls -laR "$MOUNT_DIR/kvmapp/" 2>/dev/null | head -50
+                  echo ""
+
+                  # Check how original server might be started
+                  if [ -f "$MOUNT_DIR/kvmapp/server/NanoKVM-Server" ]; then
+                    echo "Original Go server found at /kvmapp/server/NanoKVM-Server"
+                    file "$MOUNT_DIR/kvmapp/server/NanoKVM-Server"
+                  fi
+                fi
+
+                # Check for overlay/squashfs
+                echo "--- Checking for overlay/squashfs ---"
+                if [ -f "$MOUNT_DIR/etc/fstab" ]; then
+                  echo "/etc/fstab:"
+                  cat "$MOUNT_DIR/etc/fstab"
+                  echo ""
+                fi
+
+                mount | grep "$MOUNT_DIR" || true
+
+                sudo umount "$MOUNT_DIR"
+              else
+                echo "Could not mount (might be boot partition, swap, or unsupported fs)"
+                sudo file -s "$part"
+              fi
+
+              PART_NUM=$((PART_NUM + 1))
+            fi
+          done
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║           END FORENSIC ANALYSIS                              ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+
           # Find rootfs partition
           if [ -b "${LOOP_DEV}p2" ]; then
             ROOTFS="${LOOP_DEV}p2"
