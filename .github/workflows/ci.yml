@@ -78,6 +78,7 @@ jobs:
           mkdir -p package
           cp target/riscv64gc-unknown-linux-gnu/release/nanokvm-server package/
           cp -r web package/
+          cp -r dl_lib package/
           cp scripts/install.sh package/
           chmod +x package/install.sh
           chmod +x package/nanokvm-server
@@ -126,17 +127,27 @@ jobs:
             ## Installation
 
             1. Download `nanokvm-rs-${{ github.ref_name }}-riscv64.tar.gz`
-            2. Copy to your NanoKVM device
-            3. Extract and run the install script:
-
-            ```bash
-            tar -xzf nanokvm-rs-*.tar.gz
-            cd nanokvm-rs-*
-            sudo ./install.sh
-            ```
+            2. Copy to your NanoKVM device via SCP:
+               ```bash
+               scp nanokvm-rs-*.tar.gz root@<nanokvm-ip>:/tmp/
+               ```
+            3. SSH into device and install:
+               ```bash
+               ssh root@<nanokvm-ip>
+               cd /tmp
+               tar -xzf nanokvm-rs-*.tar.gz
+               ./install.sh
+               ```
 
             ## What's Included
 
             - `nanokvm-server` - Main server binary (RISC-V)
+            - `dl_lib/` - Hardware interface libraries (video capture, audio)
             - `web/` - Web UI assets
-            - `install.sh` - Installation script
+            - `install.sh` - Automated installation script
+
+            ## Requirements
+
+            - NanoKVM hardware (Full or Lite)
+            - Existing NanoKVM firmware (for kernel/rootfs)
+            - SSH access to the device

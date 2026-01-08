@@ -69,6 +69,19 @@ log_info "Installing nanokvm-server binary..."
 cp "$SCRIPT_DIR/nanokvm-server" "$INSTALL_DIR/nanokvm-server"
 chmod +x "$INSTALL_DIR/nanokvm-server"
 
+# Install proprietary libraries
+if [ -d "$SCRIPT_DIR/dl_lib" ]; then
+    log_info "Installing hardware libraries..."
+    mkdir -p "$INSTALL_DIR/dl_lib"
+    cp "$SCRIPT_DIR/dl_lib/"*.so "$INSTALL_DIR/dl_lib/"
+
+    # Add to library path
+    if ! grep -q "/kvmapp/dl_lib" /etc/ld.so.conf.d/nanokvm.conf 2>/dev/null; then
+        echo "/kvmapp/dl_lib" > /etc/ld.so.conf.d/nanokvm.conf
+        ldconfig 2>/dev/null || true
+    fi
+fi
+
 # Install web assets if present
 if [ -d "$SCRIPT_DIR/web" ]; then
     log_info "Installing web assets..."
