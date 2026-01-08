@@ -12,3 +12,8 @@ release/
 .vscode/
 *.swp
 *.swo
+
+# Documentation (only allow README files)
+*.md
+!README.md
+!*/README.md
