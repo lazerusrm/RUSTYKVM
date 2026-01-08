@@ -117,44 +117,25 @@ The health data is cached for 24 hours and accessible via `/api/storage/health`.
 
 ## Installation
 
-### On NanoKVM Device
+### Quick Start
 
-1. Download the latest release from [Releases](https://github.com/lazerusrm/RUSTYKVM/releases)
-2. Copy to your NanoKVM:
-   ```bash
-   scp nanokvm-rs-*.tar.gz root@<nanokvm-ip>:/tmp/
-   ```
-3. SSH and install:
-   ```bash
-   ssh root@<nanokvm-ip>
-   cd /tmp
-   tar -xzf nanokvm-rs-*.tar.gz
-   ./install.sh
-   ```
+1. Download the latest SD card image from [Releases](https://github.com/lazerusrm/RUSTYKVM/releases)
+2. Flash to a microSD card using your preferred tool:
+   - **[Rufus](https://rufus.ie/)** (Windows)
+   - **[balenaEtcher](https://etcher.balena.io/)** (Windows/Mac/Linux)
+   - **[Raspberry Pi Imager](https://www.raspberrypi.com/software/)** (Windows/Mac/Linux)
+3. Insert the SD card into your NanoKVM and power on
+4. Access the web interface at `https://<device-ip>`
 
-The install script will:
-- Backup existing installation
-- Install binary and libraries to `/kvmapp/`
-- Configure library paths
-- Set up init script for auto-start
-- Generate TLS certificates
-- Start the service
+### Upgrading Existing NanoKVM
 
-### Manual Installation
+If you already have a NanoKVM running the original firmware:
 
-```bash
-# Copy files
-cp nanokvm-server /kvmapp/
-cp -r dl_lib/* /kvmapp/dl_lib/
-cp -r web /kvmapp/
+1. Download the upgrade package from [Releases](https://github.com/lazerusrm/RUSTYKVM/releases)
+2. Copy to your device: `scp nanokvm-rs-*.tar.gz root@<ip>:/tmp/`
+3. SSH in and run: `cd /tmp && tar -xzf nanokvm-rs-*.tar.gz && ./install.sh`
 
-# Configure library path
-echo "/kvmapp/dl_lib" > /etc/ld.so.conf.d/nanokvm.conf
-ldconfig
-
-# Start
-cd /kvmapp && ./nanokvm-server
-```
+The installer automatically backs up your existing configuration.
 
 ## Configuration
 
