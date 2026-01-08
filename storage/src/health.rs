@@ -1,5 +1,5 @@
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc, Duration};
 use tokio::fs;
 use tokio::time::{timeout, Duration as TokioDuration};
 use tracing::warn;
@@ -70,21 +70,15 @@ async fn read_sysfs_file(path: &str) -> Option<String> {
 }
 
 async fn read_u64_from_file(path: &str) -> Option<u64> {
-    read_sysfs_file(path).await?
-        .parse::<u64>()
-        .ok()
+    read_sysfs_file(path).await?.parse::<u64>().ok()
 }
 
 async fn read_u32_from_file(path: &str) -> Option<u32> {
-    read_sysfs_file(path).await?
-        .parse::<u32>()
-        .ok()
+    read_sysfs_file(path).await?.parse::<u32>().ok()
 }
 
 async fn read_i32_from_file(path: &str) -> Option<i32> {
-    read_sysfs_file(path).await?
-        .parse::<i32>()
-        .ok()
+    read_sysfs_file(path).await?.parse::<i32>().ok()
 }
 
 async fn find_mmc_device_path(_base: &str) -> Option<String> {
@@ -105,12 +99,12 @@ async fn find_mmc_device_path(_base: &str) -> Option<String> {
 async fn read_wear_level(mmc_path: &str) -> Option<u8> {
     let life_path = format!("{}/life_time", mmc_path);
     let content = read_sysfs_file(&life_path).await?;
-    
+
     let parts: Vec<&str> = content.split_whitespace().collect();
     if parts.is_empty() {
         return None;
     }
-    
+
     match parts[0].parse::<u64>() {
         Ok(val) => Some(val as u8),
         Err(_) => None,
@@ -120,7 +114,7 @@ async fn read_wear_level(mmc_path: &str) -> Option<u8> {
 async fn read_pre_eol_info(mmc_path: &str) -> Option<EolStatus> {
     let pre_eol_path = format!("{}/pre_eol_info", mmc_path);
     let content = read_sysfs_file(&pre_eol_path).await?;
-    
+
     match content.as_str() {
         "1" | "01" | "normal" => Some(EolStatus::Normal),
         "2" | "02" | "pre-eol" | "warning" => Some(EolStatus::PreEolWarning),
@@ -134,7 +128,7 @@ async fn read_temperature(mmc_path: &str) -> Option<i32> {
         format!("{}/temp", mmc_path),
         format!("{}/temperature", mmc_path),
     ];
-    
+
     for path in &temp_paths {
         if let Some(temp) = read_i32_from_file(path).await {
             return Some(temp);
@@ -154,15 +148,21 @@ async fn read_io_errors() -> (u32, u32) {
         Some(c) => c,
         None => return (0, 0),
     };
-    
+
     let parts: Vec<&str> = content.split_whitespace().collect();
     if parts.len() < 14 {
         return (0, 0);
     }
-    
-    let read_errors = parts.get(4).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-    let write_errors = parts.get(10).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-    
+
+    let read_errors = parts
+        .get(4)
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
+    let write_errors = parts
+        .get(10)
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
+
     (read_errors, write_errors)
 }
 
@@ -181,7 +181,7 @@ async fn read_diskstats() -> (u64, u64) {
         Some(c) => c,
         None => return (0, 0),
     };
-    
+
     for line in content.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 14 && (parts[2] == "mmcblk0" || parts[3] == "mmcblk0") {
@@ -193,17 +193,22 @@ async fn read_diskstats() -> (u64, u64) {
     (0, 0)
 }
 
-fn compute_health_score(wear_level: Option<u8>, io_errors: u32, temp: Option<i32>, pre_eol: Option<EolStatus>) -> u8 {
+fn compute_health_score(
+    wear_level: Option<u8>,
+    io_errors: u32,
+    temp: Option<i32>,
+    pre_eol: Option<EolStatus>,
+) -> u8 {
     let mut score = 100u8;
-    
+
     if pre_eol == Some(EolStatus::EndOfLife) {
         return 0;
     }
-    
+
     if pre_eol == Some(EolStatus::PreEolWarning) {
         score = score.saturating_sub(30);
     }
-    
+
     if let Some(wear) = wear_level {
         if wear <= 10 {
             score = score.saturating_sub(50);
@@ -213,7 +218,7 @@ fn compute_health_score(wear_level: Option<u8>, io_errors: u32, temp: Option<i32
             score = score.saturating_sub(10);
         }
     }
-    
+
     if io_errors > 100 {
         score = score.saturating_sub(40);
     } else if io_errors > 50 {
@@ -223,7 +228,7 @@ fn compute_health_score(wear_level: Option<u8>, io_errors: u32, temp: Option<i32
     } else if io_errors > 0 {
         score = score.saturating_sub(3);
     }
-    
+
     if let Some(t) = temp {
         if t > 70 {
             score = score.saturating_sub(20);
@@ -233,7 +238,7 @@ fn compute_health_score(wear_level: Option<u8>, io_errors: u32, temp: Option<i32
             score = score.saturating_sub(5);
         }
     }
-    
+
     score.min(100)
 }
 
@@ -243,14 +248,14 @@ fn assess_status(score: u8, io_errors: u32, pre_eol: Option<EolStatus>) -> Healt
         Some(EolStatus::PreEolWarning) => return HealthStatus::Warning,
         _ => {}
     }
-    
+
     if io_errors > MAX_IO_ERRORS_THRESHOLD {
         return HealthStatus::Fail;
     }
     if io_errors > WARNING_IO_ERRORS_THRESHOLD {
         return HealthStatus::Warning;
     }
-    
+
     match score {
         80..=100 => HealthStatus::Good,
         50..=79 => HealthStatus::Fair,
@@ -301,7 +306,7 @@ async fn check_sysfs_health() -> SdHealth {
             };
         }
     };
-    
+
     let wear_level = read_wear_level(&mmc_path).await;
     let pre_eol = read_pre_eol_info(&mmc_path).await;
     let temperature = read_temperature(&mmc_path).await;
@@ -310,10 +315,10 @@ async fn check_sysfs_health() -> SdHealth {
     let io_errors = read_errs.saturating_add(write_errs);
     let (read_count, write_count) = read_diskstats().await;
     let capacity = read_capacity().await;
-    
+
     let health_score = compute_health_score(wear_level, io_errors, temperature, pre_eol.clone());
     let status = assess_status(health_score, io_errors, pre_eol.clone());
-    
+
     SdHealth {
         status,
         wear_level,
@@ -353,7 +358,10 @@ pub async fn check_health_with_logging() -> SdHealth {
         if cached.health.status != health.status {
             match health.status {
                 HealthStatus::Warning | HealthStatus::Fail => {
-                    warn!("SD card health: {} (was {})", health.status, cached.health.status);
+                    warn!(
+                        "SD card health: {} (was {})",
+                        health.status, cached.health.status
+                    );
                 }
                 _ => {}
             }

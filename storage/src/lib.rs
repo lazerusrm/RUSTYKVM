@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
+use thiserror::Error;
 use tokio::fs;
 use tracing::info;
-use thiserror::Error;
 use walkdir::WalkDir;
 
 pub mod health;
@@ -16,9 +16,12 @@ pub enum StorageError {
 
 const IMAGE_DIRECTORY: &str = "/data";
 const IMAGE_NONE: &str = "/dev/mmcblk0p3";
-const CDROM_FLAG: &str = "/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/cdrom";
-const MOUNT_DEVICE: &str = "/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/file";
-const INQUIRY_STRING: &str = "/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/inquiry_string";
+const CDROM_FLAG: &str =
+    "/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/cdrom";
+const MOUNT_DEVICE: &str =
+    "/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/file";
+const INQUIRY_STRING: &str =
+    "/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/inquiry_string";
 const RO_FLAG: &str = "/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/ro";
 const UDC_PATH: &str = "/sys/kernel/config/usb_gadget/g0/UDC";
 const UDC_LIST_PATH: &str = "/sys/class/udc/";
@@ -28,7 +31,10 @@ pub struct StorageManager;
 impl StorageManager {
     pub fn get_images() -> Result<Vec<PathBuf>, StorageError> {
         let mut images = Vec::new();
-        for entry in WalkDir::new(IMAGE_DIRECTORY).into_iter().filter_map(|e| e.ok()) {
+        for entry in WalkDir::new(IMAGE_DIRECTORY)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             if entry.file_type().is_file() {
                 let path = entry.path();
                 if let Some(ext) = path.extension() {
@@ -48,12 +54,12 @@ impl StorageManager {
         let _ = fs::write(MOUNT_DEVICE, b"\n").await;
 
         let is_none = file_path.is_none() || file_path == Some(IMAGE_NONE);
-        
+
         // CDROM mode is always read-only. Mass storage can be RO or RW.
         // For now, we follow the cdrom flag for RO.
         let ro_val = if cdrom || is_none { b"1" } else { b"0" };
         let cdrom_val = if cdrom { b"1" } else { b"0" };
-        
+
         fs::write(RO_FLAG, ro_val).await?;
         fs::write(CDROM_FLAG, cdrom_val).await?;
 
@@ -106,18 +112,23 @@ impl StorageManager {
 
     pub async fn delete_image(path: &str) -> Result<(), StorageError> {
         let path_buf = Path::new(path);
-        
+
         // Security check: must be in /data and end with .iso or .img
         if !path.starts_with(IMAGE_DIRECTORY) {
-            return Err(StorageError::InvalidFilename("Not in image directory".to_string()));
+            return Err(StorageError::InvalidFilename(
+                "Not in image directory".to_string(),
+            ));
         }
-        
-        let ext = path_buf.extension()
+
+        let ext = path_buf
+            .extension()
             .and_then(|e| e.to_str())
             .map(|s| s.to_lowercase());
-            
+
         if !matches!(ext.as_deref(), Some("iso") | Some("img")) {
-            return Err(StorageError::InvalidFilename("Invalid extension".to_string()));
+            return Err(StorageError::InvalidFilename(
+                "Invalid extension".to_string(),
+            ));
         }
 
         fs::remove_file(path).await?;

@@ -1,16 +1,16 @@
+use crate::AppState;
+use axum::http::StatusCode;
 use axum::{
-    extract::{State, Json, Multipart},
+    extract::{Json, Multipart, State},
     response::IntoResponse,
 };
-use axum::http::StatusCode;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::{error, info, warn};
-use std::path::Path;
-use sha2::{Sha512, Digest};
-use crate::AppState;
 use base64::Engine;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha512};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tracing::{error, info, warn};
 
 const STABLE_URL: &str = "https://cdn.sipeed.com/nanokvm";
 const PREVIEW_URL: &str = "https://cdn.sipeed.com/nanokvm/preview";
@@ -48,7 +48,9 @@ pub struct SetPreviewReq {
 }
 
 pub async fn get_version_handler() -> impl IntoResponse {
-    let current = tokio::fs::read_to_string("/kvmapp/version").await.unwrap_or_else(|_| "1.0.0".to_string());
+    let current = tokio::fs::read_to_string("/kvmapp/version")
+        .await
+        .unwrap_or_else(|_| "1.0.0".to_string());
     let latest = match get_latest_info().await {
         Ok(info) => info.version,
         Err(_) => current.clone(),
@@ -81,11 +83,14 @@ pub async fn offline_update_handler(mut multipart: Multipart) -> impl IntoRespon
                 let target = Path::new(CACHE_DIR).join("offline_update.tar.gz");
                 let _ = tokio::fs::create_dir_all(CACHE_DIR).await;
                 let _ = tokio::fs::write(&target, data).await;
-                
+
                 tokio::spawn(async move {
                     let _ = install_package(&target).await;
                     IS_UPDATING.store(false, Ordering::SeqCst);
-                    let _ = std::process::Command::new("sh").arg("-c").arg("/etc/init.d/S95nanokvm restart").status();
+                    let _ = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg("/etc/init.d/S95nanokvm restart")
+                        .status();
                 });
                 return StatusCode::ACCEPTED.into_response();
             }
@@ -97,13 +102,21 @@ pub async fn offline_update_handler(mut multipart: Multipart) -> impl IntoRespon
 }
 
 async fn get_latest_info() -> anyhow::Result<LatestInfo> {
-    let base_url = if Path::new(PREVIEW_FLAG).exists() { PREVIEW_URL } else { STABLE_URL };
-    let url = format!("{}/latest.json?now={}", base_url, chrono::Utc::now().timestamp());
-    
+    let base_url = if Path::new(PREVIEW_FLAG).exists() {
+        PREVIEW_URL
+    } else {
+        STABLE_URL
+    };
+    let url = format!(
+        "{}/latest.json?now={}",
+        base_url,
+        chrono::Utc::now().timestamp()
+    );
+
     let resp = reqwest::get(url).await?;
     let mut latest: LatestInfo = resp.json().await?;
     latest.url = format!("{}/{}", base_url, latest.name);
-    
+
     Ok(latest)
 }
 
@@ -148,9 +161,13 @@ async fn perform_update() -> anyhow::Result<()> {
     let mut hasher = Sha512::new();
     hasher.update(&bytes);
     let hash = base64::engine::general_purpose::STANDARD.encode(hasher.finalize());
-    
+
     if hash != latest.sha512 {
-        return Err(anyhow::anyhow!("Checksum mismatch: expected {}, got {}", latest.sha512, hash));
+        return Err(anyhow::anyhow!(
+            "Checksum mismatch: expected {}, got {}",
+            latest.sha512,
+            hash
+        ));
     }
 
     info!("Installing package...");
@@ -163,7 +180,7 @@ async fn install_package(archive_path: &Path) -> anyhow::Result<()> {
     let file = std::fs::File::open(archive_path)?;
     let tar = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(tar);
-    
+
     let extract_dir = Path::new(CACHE_DIR).join("extracted");
     let _ = tokio::fs::remove_dir_all(&extract_dir).await;
     tokio::fs::create_dir_all(&extract_dir).await?;
@@ -172,7 +189,7 @@ async fn install_package(archive_path: &Path) -> anyhow::Result<()> {
     info!("Backing up current installation...");
     let _ = tokio::fs::remove_dir_all(BACKUP_DIR).await;
     tokio::fs::create_dir_all(BACKUP_DIR).await?;
-    
+
     let mut options = fs_extra::dir::CopyOptions::new();
     options.content_only = true;
     fs_extra::dir::move_dir(APP_DIR, BACKUP_DIR, &options)?;

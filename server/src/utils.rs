@@ -1,10 +1,10 @@
 use aes::Aes256;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use cbc::Decryptor;
 use cipher::{BlockDecryptMut, KeyIvInit};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use std::env;
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 use walkdir::WalkDir;
 
 const SECRET_KEY_ENV: &str = "NANOKVM_SECRET_KEY";
@@ -45,7 +45,12 @@ pub fn decrypt_password(ciphertext: &str) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(pt).to_string())
 }
 
-fn derive_key_iv(password: &[u8], salt: &[u8], key_len: usize, iv_len: usize) -> (Vec<u8>, Vec<u8>) {
+fn derive_key_iv(
+    password: &[u8],
+    salt: &[u8],
+    key_len: usize,
+    iv_len: usize,
+) -> (Vec<u8>, Vec<u8>) {
     let mut derived_bytes = Vec::new();
     let mut last_digest: Vec<u8> = Vec::new();
 

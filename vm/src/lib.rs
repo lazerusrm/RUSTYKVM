@@ -13,14 +13,12 @@ pub enum HardwareVersion {
 impl HardwareVersion {
     pub async fn detect() -> Self {
         match tokio::fs::read_to_string("/etc/kvm/hw").await {
-            Ok(content) => {
-                match content.trim() {
-                    "alpha" => HardwareVersion::Alpha,
-                    "beta" => HardwareVersion::Beta,
-                    "pcie" => HardwareVersion::Pcie,
-                    _ => HardwareVersion::Alpha,
-                }
-            }
+            Ok(content) => match content.trim() {
+                "alpha" => HardwareVersion::Alpha,
+                "beta" => HardwareVersion::Beta,
+                "pcie" => HardwareVersion::Pcie,
+                _ => HardwareVersion::Alpha,
+            },
             Err(_) => HardwareVersion::Alpha,
         }
     }

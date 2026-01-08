@@ -1,9 +1,12 @@
-use std::sync::Arc;
-use parking_lot::RwLock;
-use axum::{extract::{State, Json}, response::IntoResponse};
-use axum::http::StatusCode;
-use serde::{Deserialize, Serialize};
 use crate::AppState;
+use axum::http::StatusCode;
+use axum::{
+    extract::{Json, State},
+    response::IntoResponse,
+};
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub struct ScreenConfig {
     pub stream_type: String, // "mjpeg" or "h264"
@@ -48,7 +51,11 @@ pub async fn update_frame_detect_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpdateFrameDetectReq>,
 ) -> impl IntoResponse {
-    let frame = if req.enabled { FRAME_DETECT_INTERVAL } else { 0 };
+    let frame = if req.enabled {
+        FRAME_DETECT_INTERVAL
+    } else {
+        0
+    };
     state.kvm.set_frame_detect(frame);
     StatusCode::OK
 }

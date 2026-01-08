@@ -1,11 +1,11 @@
-pub mod transport;
-pub mod signaling;
 pub mod client;
-pub mod ws_signaling;
 pub mod screen;
+pub mod signaling;
+pub mod transport;
+pub mod ws_signaling;
 
-use serde::{Deserialize, Serialize};
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -62,7 +62,7 @@ impl ClientCapabilities {
             supports_h265: sdp.contains("H265") || sdp.contains("HEVC"),
             max_bitrate_kbps: None,
         };
-        
+
         // Simple heuristic for bitrate if present in b=AS:
         if let Some(pos) = sdp.find("b=AS:") {
             let rest = &sdp[pos + 5..];
@@ -72,7 +72,7 @@ impl ClientCapabilities {
                 }
             }
         }
-        
+
         caps
     }
 }

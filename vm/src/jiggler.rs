@@ -1,9 +1,9 @@
+use hid::HidEngine;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use std::time::Duration;
 use tokio::fs;
+use tokio::sync::Mutex;
 use tracing::{debug, info};
-use hid::HidEngine;
 
 pub const JIGGLER_CONFIG_FILE: &str = "/etc/kvm/mouse-jiggler";
 const JIGGLER_INTERVAL: Duration = Duration::from_secs(15);
@@ -40,7 +40,7 @@ impl MouseJiggler {
 
     pub async fn spawn_loop(&self) {
         let hid = self.hid.clone();
-        
+
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(JIGGLER_INTERVAL);
             loop {
@@ -53,7 +53,7 @@ impl MouseJiggler {
                     };
 
                     debug!("Mouse jiggler: moving mouse ({})", mode);
-                    
+
                     let mut h = hid.lock().await;
                     if mode == "absolute" {
                         // Go: {0x00, 0x00, 0x3f, 0x00, 0x3f, 0x00} then {0x00, 0xff, 0x3f, 0xff, 0x3f, 0x00}

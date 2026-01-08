@@ -1,8 +1,8 @@
+use thiserror::Error;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, error, info};
-use thiserror::Error;
 
 use serde::{Deserialize, Serialize};
 
@@ -76,7 +76,11 @@ impl HidEngine {
         }
     }
 
-    async fn write_with_timeout(file: &mut Option<File>, path: &str, data: &[u8]) -> Result<(), HidError> {
+    async fn write_with_timeout(
+        file: &mut Option<File>,
+        path: &str,
+        data: &[u8],
+    ) -> Result<(), HidError> {
         if let Some(f) = file {
             // Attempt write with timeout
             match timeout(WRITE_TIMEOUT, f.write_all(data)).await {
@@ -104,20 +108,26 @@ impl HidEngine {
         } else {
             // Try to reopen?
             // For now, fail silent-ish to avoid log spam loop, or just return error
-            Err(HidError::Io(std::io::Error::new(std::io::ErrorKind::NotConnected, "Device not open")))
+            Err(HidError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "Device not open",
+            )))
         }
     }
 
     pub async fn send_keyboard(&mut self, report: &[u8]) -> Result<(), HidError> {
         if report.len() != 8 {
-            return Err(HidError::InvalidLength { expected: 8, got: report.len() });
+            return Err(HidError::InvalidLength {
+                expected: 8,
+                got: report.len(),
+            });
         }
-        
+
         let res = Self::write_with_timeout(&mut self.keyboard, HID_KEYBOARD, report).await;
         if matches!(res, Err(HidError::Io(_))) {
-             // Try to reopen immediately once
-             self.keyboard = Self::open_device(HID_KEYBOARD).await;
-             return Self::write_with_timeout(&mut self.keyboard, HID_KEYBOARD, report).await;
+            // Try to reopen immediately once
+            self.keyboard = Self::open_device(HID_KEYBOARD).await;
+            return Self::write_with_timeout(&mut self.keyboard, HID_KEYBOARD, report).await;
         }
         res
     }
@@ -125,22 +135,29 @@ impl HidEngine {
     pub async fn send_mouse(&mut self, report: &[u8]) -> Result<(), HidError> {
         match report.len() {
             4 => {
-                 let res = Self::write_with_timeout(&mut self.mouse_rel, HID_MOUSE_REL, report).await;
-                 if matches!(res, Err(HidError::Io(_))) {
-                     self.mouse_rel = Self::open_device(HID_MOUSE_REL).await;
-                     return Self::write_with_timeout(&mut self.mouse_rel, HID_MOUSE_REL, report).await;
-                 }
-                 res
-            },
+                let res =
+                    Self::write_with_timeout(&mut self.mouse_rel, HID_MOUSE_REL, report).await;
+                if matches!(res, Err(HidError::Io(_))) {
+                    self.mouse_rel = Self::open_device(HID_MOUSE_REL).await;
+                    return Self::write_with_timeout(&mut self.mouse_rel, HID_MOUSE_REL, report)
+                        .await;
+                }
+                res
+            }
             6 => {
-                 let res = Self::write_with_timeout(&mut self.mouse_abs, HID_MOUSE_ABS, report).await;
-                 if matches!(res, Err(HidError::Io(_))) {
-                     self.mouse_abs = Self::open_device(HID_MOUSE_ABS).await;
-                     return Self::write_with_timeout(&mut self.mouse_abs, HID_MOUSE_ABS, report).await;
-                 }
-                 res
-            },
-            len => Err(HidError::InvalidLength { expected: 4, got: len }), // Or 6
+                let res =
+                    Self::write_with_timeout(&mut self.mouse_abs, HID_MOUSE_ABS, report).await;
+                if matches!(res, Err(HidError::Io(_))) {
+                    self.mouse_abs = Self::open_device(HID_MOUSE_ABS).await;
+                    return Self::write_with_timeout(&mut self.mouse_abs, HID_MOUSE_ABS, report)
+                        .await;
+                }
+                res
+            }
+            len => Err(HidError::InvalidLength {
+                expected: 4,
+                got: len,
+            }), // Or 6
         }
     }
 }

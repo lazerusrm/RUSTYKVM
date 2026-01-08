@@ -1,15 +1,13 @@
+use once_cell::sync::Lazy;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
+use thiserror::Error;
 use tokio::fs;
 use tokio::process::Command;
 use tracing::{debug, error, info};
-use thiserror::Error;
-use serde::{Deserialize, Serialize};
-use regex::Regex;
-use once_cell::sync::Lazy;
 
-static MAC_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new("^[0-9A-F]{12}$").unwrap()
-});
+static MAC_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new("^[0-9A-F]{12}$").unwrap());
 
 #[derive(Error, Debug)]
 pub enum NetworkError {
@@ -43,7 +41,7 @@ impl NetworkManager {
 
     pub async fn wake_on_lan(mac: &str) -> Result<(), NetworkError> {
         let formatted_mac = Self::parse_mac(mac)?;
-        
+
         let output = Command::new("sh")
             .arg("-c")
             .arg(format!("ether-wake -b {}", formatted_mac))
@@ -56,7 +54,7 @@ impl NetworkManager {
         }
 
         let _ = Self::save_mac(&formatted_mac, "").await;
-        
+
         info!("Wake-on-LAN sent to: {}", formatted_mac);
         Ok(())
     }
@@ -95,7 +93,10 @@ impl NetworkManager {
         }
 
         if !found {
-            return Err(NetworkError::InvalidMac(format!("MAC {} not found in cache", mac)));
+            return Err(NetworkError::InvalidMac(format!(
+                "MAC {} not found in cache",
+                mac
+            )));
         }
 
         Self::save_all_macs(&entries).await?;
@@ -115,7 +116,8 @@ impl NetworkManager {
     }
 
     fn parse_mac(mac: &str) -> Result<String, NetworkError> {
-        let clean_mac = mac.to_uppercase()
+        let clean_mac = mac
+            .to_uppercase()
             .replace('-', "")
             .replace(':', "")
             .replace('.', "");
@@ -144,7 +146,7 @@ impl NetworkManager {
     async fn save_mac(mac: &str, name: &str) -> Result<(), NetworkError> {
         let entries = Self::get_wol_macs().await?;
         if entries.iter().any(|e| e.mac == mac) {
-            return Ok(())
+            return Ok(());
         }
 
         if let Some(parent) = Path::new(WOL_MAC_FILE).parent() {
@@ -163,7 +165,7 @@ impl NetworkManager {
             .create(true)
             .open(WOL_MAC_FILE)
             .await?;
-        
+
         use tokio::io::AsyncWriteExt;
         file.write_all(line.as_bytes()).await?;
         Ok(())
@@ -216,14 +218,20 @@ impl NetworkManager {
         for i in 0..30 {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if Self::is_wifi_connected().await {
-                info!("WiFi connected successfully to SSID: {} after {}s", ssid, i + 1);
+                info!(
+                    "WiFi connected successfully to SSID: {} after {}s",
+                    ssid,
+                    i + 1
+                );
                 return Ok(());
             }
             debug!("Waiting for WiFi connection... ({}s)", i + 1);
         }
 
         error!("WiFi connection timed out for SSID: {}", ssid);
-        Err(NetworkError::CommandFailed("Connection timed out".to_string()))
+        Err(NetworkError::CommandFailed(
+            "Connection timed out".to_string(),
+        ))
     }
 
     pub async fn disconnect_wifi() -> Result<(), NetworkError> {

@@ -1,14 +1,17 @@
+use crate::webrtc::transport::{IceCandidate, PeerConnectionManager, SdpOffer};
+use crate::AppState;
 use axum::{
-    extract::{ws::{Message as WsMessage, WebSocket}, State},
+    extract::{
+        ws::{Message as WsMessage, WebSocket},
+        State,
+    },
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn, debug};
-use crate::webrtc::transport::{PeerConnectionManager, SdpOffer, IceCandidate};
-use crate::AppState;
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SignalingMessage {
@@ -28,7 +31,7 @@ async fn handle_ws_signaling(socket: WebSocket, state: Arc<AppState>) {
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (msg_tx, mut msg_rx) = mpsc::channel::<SignalingMessage>(32);
-    
+
     // Task to send messages to WebSocket
     let mut ws_sender_task = tokio::spawn(async move {
         while let Some(msg) = msg_rx.recv().await {
@@ -71,10 +74,12 @@ async fn handle_ws_signaling(socket: WebSocket, state: Arc<AppState>) {
 
                     match webrtc_mgr.handle_offer("default", offer).await {
                         Ok((answer, mut handle)) => {
-                            let _ = msg_tx.send(SignalingMessage {
-                                event: "video-answer".to_string(),
-                                data: answer.sdp,
-                            }).await;
+                            let _ = msg_tx
+                                .send(SignalingMessage {
+                                    event: "video-answer".to_string(),
+                                    data: answer.sdp,
+                                })
+                                .await;
 
                             let msg_tx_clone = msg_tx.clone();
                             let conn_id = handle.connection_id.clone();
@@ -106,7 +111,9 @@ async fn handle_ws_signaling(socket: WebSocket, state: Arc<AppState>) {
                     if let Some(conn_id) = &peer_handle {
                         match serde_json::from_str::<IceCandidate>(&sig_msg.data) {
                             Ok(candidate) => {
-                                if let Err(e) = webrtc_mgr.add_ice_candidate(conn_id, candidate).await {
+                                if let Err(e) =
+                                    webrtc_mgr.add_ice_candidate(conn_id, candidate).await
+                                {
                                     error!("Failed to add ICE candidate: {}", e);
                                 }
                             }
@@ -117,10 +124,12 @@ async fn handle_ws_signaling(socket: WebSocket, state: Arc<AppState>) {
                     }
                 }
                 "heartbeat" => {
-                    let _ = msg_tx.send(SignalingMessage {
-                        event: "heartbeat".to_string(),
-                        data: "".to_string(),
-                    }).await;
+                    let _ = msg_tx
+                        .send(SignalingMessage {
+                            event: "heartbeat".to_string(),
+                            data: "".to_string(),
+                        })
+                        .await;
                 }
                 _ => debug!("Unhandled signaling event: {}", sig_msg.event),
             }
@@ -130,7 +139,7 @@ async fn handle_ws_signaling(socket: WebSocket, state: Arc<AppState>) {
     if let Some(conn_id) = peer_handle {
         let _ = webrtc_mgr.remove_connection(&conn_id).await;
     }
-    
+
     ws_sender_task.abort();
     info!("WebRTC Signaling WebSocket disconnected");
 }

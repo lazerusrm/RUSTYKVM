@@ -1,9 +1,9 @@
 use axum::{
-    extract::{State, Json},
-    response::{IntoResponse, Response},
-    middleware::Next,
-    http::{StatusCode, header, HeaderName, HeaderMap, Request},
     body::Body,
+    extract::{Json, State},
+    http::{header, HeaderMap, HeaderName, Request, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
@@ -11,20 +11,20 @@ use std::sync::Arc;
 
 static X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 static X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
-use jsonwebtoken::{encode, decode, Header, Algorithm, Validation, EncodingKey, DecodingKey};
-use subtle::ConstantTimeEq;
-use chrono::{Utc, DateTime};
-use bcrypt::{verify, hash, DEFAULT_COST};
-use tracing::{info, warn, error};
-use crate::AppState;
 use crate::utils::decrypt_password;
+use crate::AppState;
+use bcrypt::{hash, verify, DEFAULT_COST};
+use chrono::{DateTime, Utc};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use subtle::ConstantTimeEq;
 use tokio::fs;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
-use once_cell::sync::Lazy;
-use regex::Regex;
+use tracing::{error, info, warn};
 
 const COOKIE_NAME: &str = "nano-kvm-token";
 const PWD_FILE: &str = "/etc/kvm/pwd";
@@ -144,7 +144,15 @@ pub async fn login_handler(
     let ip_address = get_session_ip(&headers);
 
     if state.config.authentication == "disable" {
-        return (jar, Json(LoginRsp { token: "disabled".to_string(), requires_password_change: false, password_expiry_days: None })).into_response();
+        return (
+            jar,
+            Json(LoginRsp {
+                token: "disabled".to_string(),
+                requires_password_change: false,
+                password_expiry_days: None,
+            }),
+        )
+            .into_response();
     }
 
     let mut account = get_account().await;
@@ -152,15 +160,20 @@ pub async fn login_handler(
     let plain_password = decrypt_password(&req.password).unwrap_or(req.password.clone());
 
     let password_valid = verify(&plain_password, &account.password).unwrap_or(false);
-    let username_matches: bool = req.username.as_bytes().ct_eq(account.username.as_bytes()).into();
+    let username_matches: bool = req
+        .username
+        .as_bytes()
+        .ct_eq(account.username.as_bytes())
+        .into();
 
     if !password_valid || !username_matches {
         return (StatusCode::UNAUTHORIZED, "Invalid username or password").into_response();
     }
 
     let session_id = uuid::Uuid::new_v4().to_string();
-    let exp = Utc::now() + chrono::Duration::seconds(state.config.jwt.refresh_token_duration as i64);
-    
+    let exp =
+        Utc::now() + chrono::Duration::seconds(state.config.jwt.refresh_token_duration as i64);
+
     let claims = Claims {
         username: req.username,
         exp: exp.timestamp() as usize,
@@ -169,7 +182,11 @@ pub async fn login_handler(
     };
 
     let secret = state.config.jwt.secret_key.as_bytes();
-    match encode(&Header::default(), &claims, &EncodingKey::from_secret(secret)) {
+    match encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret),
+    ) {
         Ok(token) => {
             let cookie = Cookie::build((COOKIE_NAME, token.clone()))
                 .path("/")
@@ -177,7 +194,15 @@ pub async fn login_handler(
                 .same_site(SameSite::Lax)
                 .build();
 
-            (jar.add(cookie), Json(LoginRsp { token, requires_password_change: account.must_change_password, password_expiry_days: None })).into_response()
+            (
+                jar.add(cookie),
+                Json(LoginRsp {
+                    token,
+                    requires_password_change: account.must_change_password,
+                    password_expiry_days: None,
+                }),
+            )
+                .into_response()
         }
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Token generation failed").into_response(),
     }
@@ -197,7 +222,7 @@ pub async fn change_password_handler(
     Json(req): Json<ChangePasswordReq>,
 ) -> impl IntoResponse {
     let mut account = get_account().await;
-    
+
     let old_plain = decrypt_password(&req.old_password).unwrap_or(req.old_password.clone());
     let new_plain = decrypt_password(&req.new_password).unwrap_or(req.new_password.clone());
 
@@ -208,7 +233,12 @@ pub async fn change_password_handler(
     if let Ok(hashed) = hash(new_plain, DEFAULT_COST) {
         account.password = hashed;
         account.must_change_password = false;
-        account.last_password_change = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+        account.last_password_change = Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        );
         if save_account(&account).await.is_ok() {
             return StatusCode::OK.into_response();
         }
@@ -219,12 +249,16 @@ pub async fn change_password_handler(
 
 pub async fn is_password_updated_handler() -> impl IntoResponse {
     let updated = Path::new(PWD_FILE).exists();
-    Json(IsPasswordUpdatedRsp { is_updated: updated })
+    Json(IsPasswordUpdatedRsp {
+        is_updated: updated,
+    })
 }
 
 pub async fn get_account_handler() -> impl IntoResponse {
     let account = get_account().await;
-    Json(GetAccountRsp { username: account.username })
+    Json(GetAccountRsp {
+        username: account.username,
+    })
 }
 
 pub async fn auth_middleware(
@@ -237,7 +271,8 @@ pub async fn auth_middleware(
         return next.run(req).await;
     }
 
-    let token = jar.get(COOKIE_NAME)
+    let token = jar
+        .get(COOKIE_NAME)
         .map(|c| c.value().to_string())
         .or_else(|| {
             req.headers()
@@ -251,7 +286,8 @@ pub async fn auth_middleware(
         let secret = state.config.jwt.secret_key.as_bytes();
         let validation = Validation::new(Algorithm::HS256);
         if let Ok(data) = decode::<Claims>(&token, &DecodingKey::from_secret(secret), &validation) {
-            if !data.claims.requires_password_change || req.uri().path().contains("/auth/password") {
+            if !data.claims.requires_password_change || req.uri().path().contains("/auth/password")
+            {
                 return next.run(req).await;
             }
             return (StatusCode::FORBIDDEN, "Password change required").into_response();
@@ -305,7 +341,8 @@ pub async fn generate_token(
     requires_password_change: bool,
 ) -> Result<String, String> {
     let session_id = uuid::Uuid::new_v4().to_string();
-    let exp = Utc::now() + chrono::Duration::seconds(state.config.jwt.refresh_token_duration as i64);
+    let exp =
+        Utc::now() + chrono::Duration::seconds(state.config.jwt.refresh_token_duration as i64);
 
     let claims = Claims {
         username: username.to_string(),
@@ -315,7 +352,11 @@ pub async fn generate_token(
     };
 
     let secret = state.config.jwt.secret_key.as_bytes();
-    match encode(&Header::default(), &claims, &EncodingKey::from_secret(secret)) {
+    match encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret),
+    ) {
         Ok(token) => Ok(token),
         Err(_) => Err("Token generation failed".to_string()),
     }

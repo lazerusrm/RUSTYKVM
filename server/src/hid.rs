@@ -1,13 +1,13 @@
+use crate::AppState;
+use axum::http::StatusCode;
 use axum::{
-    extract::{State, Json},
+    extract::{Json, State},
     response::IntoResponse,
 };
-use axum::http::StatusCode;
+use hid::{Shortcut, ShortcutKey};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{error, info, debug};
-use crate::AppState;
-use hid::{Shortcut, ShortcutKey};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
@@ -106,7 +106,10 @@ pub async fn get_hid_mode_handler() -> impl IntoResponse {
                 "0x0623" => "hid-only",
                 _ => "unknown",
             };
-            Json(GetHidModeRsp { mode: mode.to_string() }).into_response()
+            Json(GetHidModeRsp {
+                mode: mode.to_string(),
+            })
+            .into_response()
         }
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read HID mode").into_response(),
     }
@@ -121,7 +124,10 @@ pub async fn set_hid_mode_handler(Json(req): Json<SetHidModeReq>) -> impl IntoRe
 
     let dst = "/etc/init.d/S03usbdev";
     if tokio::fs::copy(src, dst).await.is_ok() {
-        let _ = std::process::Command::new("chmod").arg("755").arg(dst).status();
+        let _ = std::process::Command::new("chmod")
+            .arg("755")
+            .arg(dst)
+            .status();
         tokio::spawn(async {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let _ = std::process::Command::new("reboot").status();
@@ -133,7 +139,10 @@ pub async fn set_hid_mode_handler(Json(req): Json<SetHidModeReq>) -> impl IntoRe
 }
 
 pub async fn reset_hid_handler() -> impl IntoResponse {
-    let _ = std::process::Command::new("sh").arg("-c").arg("/etc/init.d/S03usbdev restart_phy").status();
+    let _ = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("/etc/init.d/S03usbdev restart_phy")
+        .status();
     StatusCode::OK
 }
 
@@ -154,30 +163,106 @@ async fn save_shortcuts(shortcuts: &[Shortcut]) -> anyhow::Result<()> {
 
 fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
     let mut m = std::collections::HashMap::new();
-    
+
     // Base US Map
     let base_chars = [
-        ('a', 0, 4), ('b', 0, 5), ('c', 0, 6), ('d', 0, 7), ('e', 0, 8),
-        ('f', 0, 9), ('g', 0, 10), ('h', 0, 11), ('i', 0, 12), ('j', 0, 13),
-        ('k', 0, 14), ('l', 0, 15), ('m', 0, 16), ('n', 0, 17), ('o', 0, 18),
-        ('p', 0, 19), ('q', 0, 20), ('r', 0, 21), ('s', 0, 22), ('t', 0, 23),
-        ('u', 0, 24), ('v', 0, 25), ('w', 0, 26), ('x', 0, 27), ('y', 0, 28),
+        ('a', 0, 4),
+        ('b', 0, 5),
+        ('c', 0, 6),
+        ('d', 0, 7),
+        ('e', 0, 8),
+        ('f', 0, 9),
+        ('g', 0, 10),
+        ('h', 0, 11),
+        ('i', 0, 12),
+        ('j', 0, 13),
+        ('k', 0, 14),
+        ('l', 0, 15),
+        ('m', 0, 16),
+        ('n', 0, 17),
+        ('o', 0, 18),
+        ('p', 0, 19),
+        ('q', 0, 20),
+        ('r', 0, 21),
+        ('s', 0, 22),
+        ('t', 0, 23),
+        ('u', 0, 24),
+        ('v', 0, 25),
+        ('w', 0, 26),
+        ('x', 0, 27),
+        ('y', 0, 28),
         ('z', 0, 29),
-        ('A', 2, 4), ('B', 2, 5), ('C', 2, 6), ('D', 2, 7), ('E', 2, 8),
-        ('F', 2, 9), ('G', 2, 10), ('H', 2, 11), ('I', 2, 12), ('J', 2, 13),
-        ('K', 2, 14), ('L', 2, 15), ('M', 2, 16), ('N', 2, 17), ('O', 2, 18),
-        ('P', 2, 19), ('Q', 2, 20), ('R', 2, 21), ('S', 2, 22), ('T', 2, 23),
-        ('U', 2, 24), ('V', 2, 25), ('W', 2, 26), ('X', 2, 27), ('Y', 2, 28),
+        ('A', 2, 4),
+        ('B', 2, 5),
+        ('C', 2, 6),
+        ('D', 2, 7),
+        ('E', 2, 8),
+        ('F', 2, 9),
+        ('G', 2, 10),
+        ('H', 2, 11),
+        ('I', 2, 12),
+        ('J', 2, 13),
+        ('K', 2, 14),
+        ('L', 2, 15),
+        ('M', 2, 16),
+        ('N', 2, 17),
+        ('O', 2, 18),
+        ('P', 2, 19),
+        ('Q', 2, 20),
+        ('R', 2, 21),
+        ('S', 2, 22),
+        ('T', 2, 23),
+        ('U', 2, 24),
+        ('V', 2, 25),
+        ('W', 2, 26),
+        ('X', 2, 27),
+        ('Y', 2, 28),
         ('Z', 2, 29),
-        ('1', 0, 30), ('2', 0, 31), ('3', 0, 32), ('4', 0, 33), ('5', 0, 34),
-        ('6', 0, 35), ('7', 0, 36), ('8', 0, 37), ('9', 0, 38), ('0', 0, 39),
-        ('!', 2, 30), ('@', 2, 31), ('#', 2, 32), ('$', 2, 33), ('%', 2, 34),
-        ('^', 2, 35), ('&', 2, 36), ('*', 2, 37), ('(', 2, 38), (')', 2, 39),
-        ('\n', 0, 40), ('\t', 0, 43), (' ', 0, 44), ('-', 0, 45), ('=', 0, 46),
-        ('[', 0, 47), (']', 0, 48), ('\\', 0, 49), (';', 0, 51), ('\'', 0, 52),
-        ('`', 0, 53), (',', 0, 54), ('.', 0, 55), ('/', 0, 56), ('_', 2, 45),
-        ('+', 2, 46), ('{', 2, 47), ('}', 2, 48), ('|', 2, 49), (':', 2, 51),
-        ('"', 2, 52), ('~', 2, 53), ('<', 2, 54), ('>', 2, 55), ('?', 2, 56),
+        ('1', 0, 30),
+        ('2', 0, 31),
+        ('3', 0, 32),
+        ('4', 0, 33),
+        ('5', 0, 34),
+        ('6', 0, 35),
+        ('7', 0, 36),
+        ('8', 0, 37),
+        ('9', 0, 38),
+        ('0', 0, 39),
+        ('!', 2, 30),
+        ('@', 2, 31),
+        ('#', 2, 32),
+        ('$', 2, 33),
+        ('%', 2, 34),
+        ('^', 2, 35),
+        ('&', 2, 36),
+        ('*', 2, 37),
+        ('(', 2, 38),
+        (')', 2, 39),
+        ('\n', 0, 40),
+        ('\t', 0, 43),
+        (' ', 0, 44),
+        ('-', 0, 45),
+        ('=', 0, 46),
+        ('[', 0, 47),
+        (']', 0, 48),
+        ('\\', 0, 49),
+        (';', 0, 51),
+        ('\'', 0, 52),
+        ('`', 0, 53),
+        (',', 0, 54),
+        ('.', 0, 55),
+        ('/', 0, 56),
+        ('_', 2, 45),
+        ('+', 2, 46),
+        ('{', 2, 47),
+        ('}', 2, 48),
+        ('|', 2, 49),
+        (':', 2, 51),
+        ('"', 2, 52),
+        ('~', 2, 53),
+        ('<', 2, 54),
+        ('>', 2, 55),
+        ('?', 2, 56),
     ];
 
     for (c, mods, code) in base_chars {
@@ -185,11 +270,16 @@ fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
     }
 
     if lang == "de" {
-        m.insert('y', (0, 29)); m.insert('Y', (2, 29));
-        m.insert('z', (0, 28)); m.insert('Z', (2, 28));
-        m.insert('ä', (0, 52)); m.insert('Ä', (2, 52));
-        m.insert('ö', (0, 51)); m.insert('Ö', (2, 51));
-        m.insert('ü', (0, 47)); m.insert('Ü', (2, 47));
+        m.insert('y', (0, 29));
+        m.insert('Y', (2, 29));
+        m.insert('z', (0, 28));
+        m.insert('Z', (2, 28));
+        m.insert('ä', (0, 52));
+        m.insert('Ä', (2, 52));
+        m.insert('ö', (0, 51));
+        m.insert('Ö', (2, 51));
+        m.insert('ü', (0, 47));
+        m.insert('Ü', (2, 47));
         m.insert('ß', (0, 45));
         m.insert('^', (0, 53));
         m.insert('/', (2, 36));
@@ -225,28 +315,45 @@ fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
         m.insert('³', (0x40, 32));
     } else if lang == "fr" {
         // AZERTY Swaps
-        m.insert('a', (0, 20)); m.insert('A', (2, 20));
-        m.insert('q', (0, 4));  m.insert('Q', (2, 4));
-        m.insert('z', (0, 26)); m.insert('Z', (2, 26));
-        m.insert('w', (0, 29)); m.insert('W', (2, 29));
-        m.insert('m', (0, 51)); m.insert('M', (2, 51));
-        
+        m.insert('a', (0, 20));
+        m.insert('A', (2, 20));
+        m.insert('q', (0, 4));
+        m.insert('Q', (2, 4));
+        m.insert('z', (0, 26));
+        m.insert('Z', (2, 26));
+        m.insert('w', (0, 29));
+        m.insert('W', (2, 29));
+        m.insert('m', (0, 51));
+        m.insert('M', (2, 51));
+
         // Digits (require shift on French AZERTY)
-        m.insert('1', (2, 30)); m.insert('2', (2, 31));
-        m.insert('3', (2, 32)); m.insert('4', (2, 33));
-        m.insert('5', (2, 34)); m.insert('6', (2, 35));
-        m.insert('7', (2, 36)); m.insert('8', (2, 37));
-        m.insert('9', (2, 38)); m.insert('0', (2, 39));
+        m.insert('1', (2, 30));
+        m.insert('2', (2, 31));
+        m.insert('3', (2, 32));
+        m.insert('4', (2, 33));
+        m.insert('5', (2, 34));
+        m.insert('6', (2, 35));
+        m.insert('7', (2, 36));
+        m.insert('8', (2, 37));
+        m.insert('9', (2, 38));
+        m.insert('0', (2, 39));
 
         // Accents
-        m.insert('é', (0, 31)); m.insert('è', (0, 36));
-        m.insert('ç', (0, 38)); m.insert('à', (0, 39));
+        m.insert('é', (0, 31));
+        m.insert('è', (0, 36));
+        m.insert('ç', (0, 38));
+        m.insert('à', (0, 39));
         m.insert('ù', (0, 52));
-        
+
         // Symbols
-        m.insert('&', (0, 30)); m.insert('é', (0, 31)); m.insert('"', (0, 32));
-        m.insert('\'', (0, 33)); m.insert('(', (0, 34)); m.insert('-', (0, 35));
-        m.insert('_', (0, 37)); m.insert(')', (0, 40));
+        m.insert('&', (0, 30));
+        m.insert('é', (0, 31));
+        m.insert('"', (0, 32));
+        m.insert('\'', (0, 33));
+        m.insert('(', (0, 34));
+        m.insert('-', (0, 35));
+        m.insert('_', (0, 37));
+        m.insert(')', (0, 40));
     }
 
     m

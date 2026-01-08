@@ -1,9 +1,9 @@
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::fs;
 use tracing::{info, warn};
 use uuid::Uuid;
-use base64::Engine;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
@@ -27,9 +27,15 @@ pub struct Config {
     pub password_policy: PasswordPolicy,
 }
 
-fn default_proto() -> String { "https".to_string() }
-fn default_auth() -> String { "enable".to_string() }
-fn default_stun() -> String { "stun.l.google.com:19302".to_string() }
+fn default_proto() -> String {
+    "https".to_string()
+}
+fn default_auth() -> String {
+    "enable".to_string()
+}
+fn default_stun() -> String {
+    "stun.l.google.com:19302".to_string()
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Logger {
@@ -48,8 +54,12 @@ impl Default for Logger {
     }
 }
 
-fn default_log_level() -> String { "info".to_string() }
-fn default_log_file() -> String { "stdout".to_string() }
+fn default_log_level() -> String {
+    "info".to_string()
+}
+fn default_log_file() -> String {
+    "stdout".to_string()
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Port {
@@ -68,8 +78,12 @@ impl Default for Port {
     }
 }
 
-fn default_http_port() -> u16 { 80 }
-fn default_https_port() -> u16 { 443 }
+fn default_http_port() -> u16 {
+    80
+}
+fn default_https_port() -> u16 {
+    443
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Cert {
@@ -88,8 +102,12 @@ impl Default for Cert {
     }
 }
 
-fn default_cert() -> String { "server.crt".to_string() }
-fn default_key() -> String { "server.key".to_string() }
+fn default_cert() -> String {
+    "server.crt".to_string()
+}
+fn default_key() -> String {
+    "server.key".to_string()
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JwtConfig {
@@ -120,8 +138,12 @@ fn generate_random_secret() -> String {
     base64::engine::general_purpose::STANDARD.encode(&key)
 }
 
-fn default_jwt_duration() -> u64 { 2678400 }
-fn default_true() -> bool { true }
+fn default_jwt_duration() -> u64 {
+    2678400
+}
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Turn {
@@ -163,19 +185,45 @@ pub struct PasswordPolicy {
     pub force_first_password_change: bool,
 }
 
-fn default_min_length() -> u8 { 8 }
-fn default_max_length() -> u8 { 128 }
-fn default_require_uppercase() -> bool { true }
-fn default_require_lowercase() -> bool { true }
-fn default_require_digit() -> bool { true }
-fn default_require_special() -> bool { true }
-fn default_special_chars() -> String { "!@#$%^&*()_+-=[]{}|;:,.<>?".to_string() }
-fn default_max_age_days() -> u16 { 90 }
-fn default_min_age_days() -> u16 { 1 }
-fn default_history_count() -> u8 { 12 }
-fn default_lockout_threshold() -> u8 { 5 }
-fn default_lockout_duration_minutes() -> u16 { 30 }
-fn default_force_first_change() -> bool { true }
+fn default_min_length() -> u8 {
+    8
+}
+fn default_max_length() -> u8 {
+    128
+}
+fn default_require_uppercase() -> bool {
+    true
+}
+fn default_require_lowercase() -> bool {
+    true
+}
+fn default_require_digit() -> bool {
+    true
+}
+fn default_require_special() -> bool {
+    true
+}
+fn default_special_chars() -> String {
+    "!@#$%^&*()_+-=[]{}|;:,.<>?".to_string()
+}
+fn default_max_age_days() -> u16 {
+    90
+}
+fn default_min_age_days() -> u16 {
+    1
+}
+fn default_history_count() -> u8 {
+    12
+}
+fn default_lockout_threshold() -> u8 {
+    5
+}
+fn default_lockout_duration_minutes() -> u16 {
+    30
+}
+fn default_force_first_change() -> bool {
+    true
+}
 
 impl Default for PasswordPolicy {
     fn default() -> Self {
@@ -202,20 +250,18 @@ const CONFIG_FILE: &str = "/etc/kvm/config.yaml";
 impl Config {
     pub async fn load() -> Self {
         let path = Path::new(CONFIG_FILE);
-        
+
         if path.exists() {
             match fs::read_to_string(path).await {
-                Ok(content) => {
-                    match serde_yaml::from_str::<Config>(&content) {
-                        Ok(config) => {
-                            info!("Configuration loaded from {}", CONFIG_FILE);
-                            return config;
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse config file: {}. Using defaults.", e);
-                        }
+                Ok(content) => match serde_yaml::from_str::<Config>(&content) {
+                    Ok(config) => {
+                        info!("Configuration loaded from {}", CONFIG_FILE);
+                        return config;
                     }
-                }
+                    Err(e) => {
+                        warn!("Failed to parse config file: {}. Using defaults.", e);
+                    }
+                },
                 Err(e) => {
                     warn!("Failed to read config file: {}. Using defaults.", e);
                 }

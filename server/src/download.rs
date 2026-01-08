@@ -1,15 +1,15 @@
+use crate::AppState;
+use axum::http::StatusCode;
 use axum::{
     extract::{Json, Multipart},
     response::IntoResponse,
 };
-use axum::http::StatusCode;
-use serde::{Deserialize, Serialize};
-use tokio::fs;
-use tokio::io::{AsyncWriteExt, AsyncSeekExt};
-use tracing::{error, info, debug, warn};
-use std::path::Path;
-use crate::AppState;
 use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+use tokio::fs;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tracing::{debug, error, info, warn};
 
 const SENTINEL_PATH: &str = "/tmp/.download_in_progress";
 const DATA_DIR: &str = "/data";
@@ -31,7 +31,8 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 fn get_extension(name: &str) -> String {
-    name.rsplit('.').next()
+    name.rsplit('.')
+        .next()
         .filter(|ext| ext.eq_ignore_ascii_case("iso") || ext.eq_ignore_ascii_case("img"))
         .map(|s| format!(".{}", s))
         .unwrap_or_else(|| ".iso".to_string())
@@ -70,7 +71,7 @@ pub async fn status_image_handler() -> impl IntoResponse {
         let parts: Vec<&str> = content.split(';').collect();
         let file = parts.get(0).unwrap_or(&"").to_string();
         let percentage = parts.get(1).unwrap_or(&"").to_string();
-        
+
         Json(StatusImageRsp {
             status: "in_progress".to_string(),
             file,
@@ -123,12 +124,20 @@ pub async fn upload_image_handler(mut multipart: Multipart) -> impl IntoResponse
                 }
                 if let Err(e) = file.write_all(&chunk).await {
                     let _ = fs::remove_file(&dest_path).await;
-                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("Write failed: {}", e)).into_response();
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Write failed: {}", e),
+                    )
+                        .into_response();
                 }
                 total_written += chunk.len() as u64;
 
                 if last_update.elapsed() > std::time::Duration::from_millis(1000) {
-                    let _ = fs::write(SENTINEL_PATH, format!("{};{} bytes", sanitized, total_written)).await;
+                    let _ = fs::write(
+                        SENTINEL_PATH,
+                        format!("{};{} bytes", sanitized, total_written),
+                    )
+                    .await;
                     last_update = std::time::Instant::now();
                 }
             }
@@ -176,7 +185,8 @@ pub async fn download_image_url_handler(Json(req): Json<DownloadImageUrlReq>) ->
         Err(_) => return (StatusCode::BAD_REQUEST, "Invalid URL").into_response(),
     };
 
-    let raw_filename = url.path_segments()
+    let raw_filename = url
+        .path_segments()
         .and_then(|s| s.last())
         .unwrap_or("image.iso");
 
@@ -202,7 +212,8 @@ pub async fn download_image_url_handler(Json(req): Json<DownloadImageUrlReq>) ->
         status: "in_progress".to_string(),
         file: req.file,
         percentage: "0%".to_string(),
-    }).into_response()
+    })
+    .into_response()
 }
 
 async fn perform_url_download(url: String, filename: String) -> anyhow::Result<()> {

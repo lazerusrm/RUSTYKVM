@@ -1,10 +1,10 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::ptr;
-use std::ops::Deref;
-use tracing::info;
-use thiserror::Error;
 use bytes::Bytes;
 use parking_lot::Mutex;
+use std::ops::Deref;
+use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use thiserror::Error;
+use tracing::info;
 
 /// Errors that can occur during KVM operations
 #[derive(Error, Debug)]
@@ -49,13 +49,13 @@ impl KvmFrame {
         let len = self.len;
         // We "forget" self so Drop isn't called, then wrap the raw parts.
         let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
-        
-        // Use Bytes' ability to wrap an owner. 
+
+        // Use Bytes' ability to wrap an owner.
         // Since we want to call a custom free function, we wrap self in an Arc.
         let _owner = std::sync::Arc::new(self);
         Bytes::copy_from_slice(slice) // Bytes::copy_from_slice still copies.
-        
-        // To truly avoid copy into `Bytes`, we'd need a custom implementation or 
+
+        // To truly avoid copy into `Bytes`, we'd need a custom implementation or
         // use a different body type in Axum.
         // However, for the SG2002, the biggest bottleneck is often re-packetization.
         // Let's implement a Deref-based approach for internal use.
@@ -90,7 +90,9 @@ impl Kvm {
         let _guard = KVM_LOCK.lock();
         if !KVM_INITIALIZED.load(Ordering::SeqCst) {
             info!("Initializing KVM hardware...");
-            unsafe { kvm_sys::kvmv_init(0); }
+            unsafe {
+                kvm_sys::kvmv_init(0);
+            }
             KVM_INITIALIZED.store(true, Ordering::SeqCst);
             info!("KVM hardware initialized.");
         }
@@ -105,7 +107,13 @@ impl Kvm {
         self.read_img(width, height, kvm_sys::IMG_H264_TYPE_SPS, bitrate)
     }
 
-    fn read_img(&self, width: u16, height: u16, img_type: u8, quality: u16) -> Result<KvmFrame, KvmError> {
+    fn read_img(
+        &self,
+        width: u16,
+        height: u16,
+        img_type: u8,
+        quality: u16,
+    ) -> Result<KvmFrame, KvmError> {
         let mut data_ptr: *mut u8 = ptr::null_mut();
         let mut size: u32 = 0;
 

@@ -2,22 +2,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use base64::engine::general_purpose::STANDARD as base64_standard;
+use base64::Engine;
 use reqwest::Client;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
-use base64::engine::general_purpose::STANDARD as base64_standard;
-use base64::Engine;
 use url::Url;
-use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::APIBuilder;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
-use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
-use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp::packet::Packet;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 
 #[derive(Debug, serde::Serialize)]
 struct WhepRequest<'a> {
@@ -66,7 +66,10 @@ impl WhepClient {
         self.resource_id = Some(resource_id);
         self.location = Some(location);
         self.etag = Some(etag);
-        info!("WHEP resources stored: location={}", self.location.as_deref().unwrap_or("N/A"));
+        info!(
+            "WHEP resources stored: location={}",
+            self.location.as_deref().unwrap_or("N/A")
+        );
     }
 
     /// Get the resource ID for PATCH/DELETE operations
@@ -145,8 +148,7 @@ impl WhepClient {
 
         info!(
             quality_tier,
-            bitrate_kbps,
-            "Stream quality patched successfully"
+            bitrate_kbps, "Stream quality patched successfully"
         );
 
         Ok(())
@@ -201,11 +203,11 @@ pub async fn start_webrtc_stream(
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     let mut media_engine = MediaEngine::default();
-    media_engine.register_default_codecs().context("Failed to register codecs")?;
+    media_engine
+        .register_default_codecs()
+        .context("Failed to register codecs")?;
 
-    let api = APIBuilder::new()
-        .with_media_engine(media_engine)
-        .build();
+    let api = APIBuilder::new().with_media_engine(media_engine).build();
 
     let config = RTCConfiguration {
         ice_servers: vec![RTCIceServer {
@@ -230,80 +232,79 @@ pub async fn start_webrtc_stream(
 
     let packet_tx_clone = packet_tx.clone();
     let byte_counter_clone = Arc::clone(&byte_counter);
-    peer_connection
-        .on_track(Box::new(move |track, _, _| {
-            let packet_tx = packet_tx_clone.clone();
-            let byte_counter = Arc::clone(&byte_counter_clone);
-            Box::pin(async move {
-                let mut depacketizer = H264Depacketizer::new();
-                let codec = track.codec();
-                info!(
-                    kind = ?track.kind(),
-                    payload_type = codec.payload_type,
-                    mime = %codec.capability.mime_type,
-                    "WebRTC track received"
-                );
-                let mut packet_count = 0u64;
-                let mut nal_logged = 0u32;
-                loop {
-                    match track.read_rtp().await {
-                        Ok((packet, _)) => {
-                            packet_count += 1;
-                            if packet_count == 1 {
-                                let prefix_len = packet.payload.len().min(16);
-                                let prefix = packet.payload[..prefix_len]
+    peer_connection.on_track(Box::new(move |track, _, _| {
+        let packet_tx = packet_tx_clone.clone();
+        let byte_counter = Arc::clone(&byte_counter_clone);
+        Box::pin(async move {
+            let mut depacketizer = H264Depacketizer::new();
+            let codec = track.codec();
+            info!(
+                kind = ?track.kind(),
+                payload_type = codec.payload_type,
+                mime = %codec.capability.mime_type,
+                "WebRTC track received"
+            );
+            let mut packet_count = 0u64;
+            let mut nal_logged = 0u32;
+            loop {
+                match track.read_rtp().await {
+                    Ok((packet, _)) => {
+                        packet_count += 1;
+                        if packet_count == 1 {
+                            let prefix_len = packet.payload.len().min(16);
+                            let prefix = packet.payload[..prefix_len]
+                                .iter()
+                                .map(|byte| format!("{:02x}", byte))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            info!(
+                                payload_type = packet.header.payload_type,
+                                ssrc = packet.header.ssrc,
+                                payload_len = packet.payload.len(),
+                                payload_prefix = %prefix,
+                                "First RTP packet received"
+                            );
+                        } else if packet_count.is_multiple_of(120) {
+                            debug!(
+                                packet_count,
+                                payload_type = packet.header.payload_type,
+                                ssrc = packet.header.ssrc,
+                                "WebRTC RTP packets received"
+                            );
+                        }
+                        for nal in depacketizer.depacketize(&packet) {
+                            if nal_logged < 10 {
+                                let prefix_len = nal.len().min(16);
+                                let prefix = nal[..prefix_len]
                                     .iter()
                                     .map(|byte| format!("{:02x}", byte))
                                     .collect::<Vec<_>>()
                                     .join(" ");
-                                info!(
-                                    payload_type = packet.header.payload_type,
-                                    ssrc = packet.header.ssrc,
-                                    payload_len = packet.payload.len(),
-                                    payload_prefix = %prefix,
-                                    "First RTP packet received"
-                                );
-                            } else if packet_count.is_multiple_of(120) {
-                                debug!(
-                                    packet_count,
-                                    payload_type = packet.header.payload_type,
-                                    ssrc = packet.header.ssrc,
-                                    "WebRTC RTP packets received"
-                                );
-                            }
-                            for nal in depacketizer.depacketize(&packet) {
-                                if nal_logged < 10 {
-                                    let prefix_len = nal.len().min(16);
-                                    let prefix = nal[..prefix_len]
-                                        .iter()
-                                        .map(|byte| format!("{:02x}", byte))
-                                        .collect::<Vec<_>>()
-                                        .join(" ");
-                                    if let Some(nal_type) = nal_unit_type(&nal) {
-                                        info!(
-                                            nal_logged,
-                                            nal_type,
-                                            nal_len = nal.len(),
-                                            nal_prefix = %prefix,
-                                            "Received H264 NAL unit"
-                                        );
-                                    }
-                                    nal_logged += 1;
+                                if let Some(nal_type) = nal_unit_type(&nal) {
+                                    info!(
+                                        nal_logged,
+                                        nal_type,
+                                        nal_len = nal.len(),
+                                        nal_prefix = %prefix,
+                                        "Received H264 NAL unit"
+                                    );
                                 }
-                                byte_counter.fetch_add(nal.len() as u64, Ordering::Relaxed);
-                                if packet_tx.send(nal).await.is_err() {
-                                    break;
-                                }
+                                nal_logged += 1;
                             }
-                        }
-                        Err(error) => {
-                            warn!(error = %error, "WebRTC track read error");
-                            break;
+                            byte_counter.fetch_add(nal.len() as u64, Ordering::Relaxed);
+                            if packet_tx.send(nal).await.is_err() {
+                                break;
+                            }
                         }
                     }
+                    Err(error) => {
+                        warn!(error = %error, "WebRTC track read error");
+                        break;
+                    }
                 }
-            })
-        }));
+            }
+        })
+    }));
 
     let offer = peer_connection.create_offer(None).await?;
     peer_connection.set_local_description(offer).await?;
@@ -381,7 +382,10 @@ async fn fetch_whep_answer(
     auth_token: Option<&str>,
 ) -> Result<WhepAnswer> {
     let client = Client::new();
-    let mut request = client.post(url.clone()).json(&WhepRequest { camera_id, offer_sdp });
+    let mut request = client.post(url.clone()).json(&WhepRequest {
+        camera_id,
+        offer_sdp,
+    });
 
     if let Some(token) = auth_token {
         request = request.bearer_auth(token);
@@ -407,7 +411,10 @@ async fn fetch_whep_answer(
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
-    let whep: WhepResponse = response.json().await.context("Failed to parse WHEP response")?;
+    let whep: WhepResponse = response
+        .json()
+        .await
+        .context("Failed to parse WHEP response")?;
     let param_sets = extract_sprop_parameter_sets(&whep.answer_sdp);
     if param_sets.is_empty() {
         warn!("No H264 parameter sets found in WHEP SDP");
@@ -417,18 +424,13 @@ async fn fetch_whep_answer(
 
     // Create WhepClient and store RFC 8825 resources
     let mut whep_client = WhepClient::new(auth_token.map(|s| s.to_string()));
-    if let (Some(resource_id), Some(loc), Some(etag_val)) = (
-        Some(whep.resource_id.clone()),
-        location,
-        etag,
-    ) {
+    if let (Some(resource_id), Some(loc), Some(etag_val)) =
+        (Some(whep.resource_id.clone()), location, etag)
+    {
         whep_client.store_resources(resource_id, loc, etag_val);
     }
 
-    Ok(WhepAnswer {
-        answer,
-        param_sets,
-    })
+    Ok(WhepAnswer { answer, param_sets })
 }
 
 struct H264Depacketizer {
@@ -437,7 +439,9 @@ struct H264Depacketizer {
 
 impl H264Depacketizer {
     fn new() -> Self {
-        Self { fu_buffer: Vec::new() }
+        Self {
+            fu_buffer: Vec::new(),
+        }
     }
 
     fn depacketize(&mut self, packet: &Packet) -> Vec<Vec<u8>> {
@@ -598,7 +602,7 @@ mod tests {
     #[test]
     fn test_get_methods_return_options() {
         let mut client = WhepClient::new(None);
-        
+
         // Initially empty
         assert!(client.get_resource_id().is_none());
         assert!(client.get_etag().is_none());
@@ -619,7 +623,7 @@ mod tests {
     #[tokio::test]
     async fn test_patch_requires_resource_id() {
         let mut client = WhepClient::new(None);
-        
+
         // Should fail without resource_id
         let result = client.patch_stream_quality("high", Some(5000)).await;
         assert!(result.is_err());
@@ -632,10 +636,10 @@ mod tests {
     #[tokio::test]
     async fn test_patch_requires_etag() {
         let mut client = WhepClient::new(None);
-        
+
         // Store only resource_id, not etag
         client.resource_id = Some("https://edge/resource/1".to_string());
-        
+
         // Should fail without etag
         let result = client.patch_stream_quality("high", Some(5000)).await;
         assert!(result.is_err());
@@ -648,7 +652,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_requires_resource_id() {
         let mut client = WhepClient::new(None);
-        
+
         // Should fail without resource_id
         let result = client.delete_stream().await;
         assert!(result.is_err());
@@ -661,10 +665,10 @@ mod tests {
     #[tokio::test]
     async fn test_delete_requires_etag() {
         let mut client = WhepClient::new(None);
-        
+
         // Store only resource_id, not etag
         client.resource_id = Some("https://edge/resource/1".to_string());
-        
+
         // Should fail without etag
         let result = client.delete_stream().await;
         assert!(result.is_err());
@@ -725,7 +729,7 @@ mod tests {
     fn test_with_start_code_idempotent() {
         let nal_with_code = vec![0u8, 0u8, 0u8, 1u8, 0x65, 0x88, 0x84, 0x00];
         let result = with_start_code(&nal_with_code);
-        
+
         // Should not double-add start code
         assert_eq!(result.len(), nal_with_code.len());
         assert_eq!(result, nal_with_code);
@@ -735,7 +739,7 @@ mod tests {
     fn test_with_start_code_adds_prefix() {
         let nal_without_code = vec![0x65, 0x88, 0x84, 0x00];
         let result = with_start_code(&nal_without_code);
-        
+
         // Should add 4-byte start code
         assert_eq!(result.len(), nal_without_code.len() + 4);
         assert_eq!(&result[0..4], &[0u8, 0u8, 0u8, 1u8]);
@@ -744,9 +748,10 @@ mod tests {
 
     #[test]
     fn test_extract_sprop_parameter_sets_valid_sdp() {
-        let sdp = "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0JAH5WgKA9gvB4BAQaAA,aM48gA==";
+        let sdp =
+            "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0JAH5WgKA9gvB4BAQaAA,aM48gA==";
         let param_sets = extract_sprop_parameter_sets(sdp);
-        
+
         // Should extract two parameter sets
         assert_eq!(param_sets.len(), 2);
     }
@@ -755,7 +760,7 @@ mod tests {
     fn test_extract_sprop_parameter_sets_missing() {
         let sdp = "v=0\no=- 1 2 IN IP4 127.0.0.1\ns=test\nt=0 0\n";
         let param_sets = extract_sprop_parameter_sets(sdp);
-        
+
         // Should return empty vec when no parameter sets
         assert_eq!(param_sets.len(), 0);
     }
@@ -771,7 +776,10 @@ mod tests {
 
         let response: WhepResponse = serde_json::from_str(json).unwrap();
         assert_eq!(response.resource_id, "https://edge/resource/123");
-        assert_eq!(response.location.as_deref(), Some("https://edge/resource/123"));
+        assert_eq!(
+            response.location.as_deref(),
+            Some("https://edge/resource/123")
+        );
         assert_eq!(response.etag.as_deref(), Some("v1-abc123"));
         assert!(response.answer_sdp.starts_with("v=0"));
     }

@@ -1,4 +1,4 @@
-use libc::{c_int};
+use libc::c_int;
 
 // Constants from kvm_vision.h
 pub const IMG_BUFFER_FULL: c_int = -3;

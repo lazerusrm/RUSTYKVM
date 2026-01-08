@@ -1,14 +1,10 @@
-use axum::{
-    extract::State,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, response::IntoResponse, Json};
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use storage::health::SdHealth;
 use crate::AppState;
+use storage::health::SdHealth;
 
 pub struct HealthState {
     pub cached_health: Mutex<Option<SdHealth>>,

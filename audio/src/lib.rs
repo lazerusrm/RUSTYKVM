@@ -1,7 +1,7 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
-use tracing::{error, info, debug};
 use thiserror::Error;
+use tracing::{debug, error, info};
 
 #[derive(Error, Debug)]
 pub enum AudioError {
@@ -31,7 +31,12 @@ const PCM_IN: c_uint = 0x10000000;
 const PCM_FORMAT_S16_LE: c_uint = 0;
 
 extern "C" {
-    fn pcm_open(card: c_uint, device: c_uint, flags: c_uint, config: *const pcm_config) -> *mut c_void;
+    fn pcm_open(
+        card: c_uint,
+        device: c_uint,
+        flags: c_uint,
+        config: *const pcm_config,
+    ) -> *mut c_void;
     fn pcm_close(pcm: *mut c_void) -> c_int;
     fn pcm_is_ready(pcm: *mut c_void) -> c_int;
     fn pcm_get_error(pcm: *mut c_void) -> *const c_char;
@@ -88,7 +93,11 @@ impl AudioCapturer {
         }
 
         unsafe {
-            let res = pcm_read(self.pcm, buffer.as_mut_ptr() as *mut c_void, self.buffer_size as c_uint);
+            let res = pcm_read(
+                self.pcm,
+                buffer.as_mut_ptr() as *mut c_void,
+                self.buffer_size as c_uint,
+            );
             if res < 0 {
                 return Err(AudioError::ReadFailed(res));
             }

@@ -1,11 +1,8 @@
-use axum::{
-    extract::Json,
-    response::IntoResponse,
-};
 use axum::http::StatusCode;
+use axum::{extract::Json, response::IntoResponse};
+use network::{NetworkManager, WolEntry};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
-use network::{NetworkManager, WolEntry};
 
 #[derive(Deserialize)]
 pub struct WakeOnLANReq {
@@ -58,9 +55,16 @@ pub async fn wol_handler(Json(req): Json<WakeOnLANReq>) -> impl IntoResponse {
 pub async fn get_wol_macs_handler() -> impl IntoResponse {
     match NetworkManager::get_wol_macs().await {
         Ok(entries) => {
-            let macs = entries.into_iter().map(|e| {
-                if e.name.is_empty() { e.mac } else { format!("{} {}", e.mac, e.name) }
-            }).collect();
+            let macs = entries
+                .into_iter()
+                .map(|e| {
+                    if e.name.is_empty() {
+                        e.mac
+                    } else {
+                        format!("{} {}", e.mac, e.name)
+                    }
+                })
+                .collect();
             Json(GetMacRsp { macs }).into_response()
         }
         Err(e) => {
@@ -102,7 +106,9 @@ pub async fn get_wifi_handler() -> impl IntoResponse {
         connected = NetworkManager::is_wifi_connected().await;
         ap_mode = NetworkManager::is_wifi_ap_mode().await;
         if connected {
-            ssid = NetworkManager::get_wifi_ssid().await.unwrap_or_else(|| "Wi-Fi".to_string());
+            ssid = NetworkManager::get_wifi_ssid()
+                .await
+                .unwrap_or_else(|| "Wi-Fi".to_string());
         }
     }
 

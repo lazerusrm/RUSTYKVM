@@ -1,8 +1,8 @@
+use crate::{HardwareConfig, HardwareVersion};
 use std::time::Duration;
+use thiserror::Error;
 use tokio::fs;
 use tracing::{debug, error};
-use thiserror::Error;
-use crate::{HardwareConfig, HardwareVersion};
 
 #[derive(Error, Debug)]
 pub enum GpioError {
@@ -37,7 +37,7 @@ impl VmController {
 
     async fn pulse_gpio(&self, path: &str, duration_ms: u64) -> Result<(), GpioError> {
         debug!("Pulsing GPIO {} for {}ms", path, duration_ms);
-        
+
         // Press (Set to 1)
         fs::write(path, b"1").await.map_err(|e| {
             error!("Failed to write 1 to {}: {}", path, e);
