@@ -73,12 +73,21 @@ jobs:
           CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
         run: cargo build --workspace --release --target riscv64gc-unknown-linux-gnu
 
-      - name: Upload RISC-V artifacts
+      - name: Create deployment package
+        run: |
+          mkdir -p package
+          cp target/riscv64gc-unknown-linux-gnu/release/nanokvm-server package/
+          cp -r web package/
+          cp scripts/install.sh package/
+          chmod +x package/install.sh
+          chmod +x package/nanokvm-server
+
+      - name: Upload deployment package
         uses: actions/upload-artifact@v4
         with:
-          name: nanokvm-riscv64
-          path: target/riscv64gc-unknown-linux-gnu/release/nanokvm-server
-          if-no-files-found: warn
+          name: nanokvm-deploy
+          path: package/
+          if-no-files-found: error
 
   release:
     name: Create Release
@@ -90,24 +99,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download RISC-V artifacts
+      - name: Download deployment package
         uses: actions/download-artifact@v4
         with:
-          name: nanokvm-riscv64
-          path: artifacts/
+          name: nanokvm-deploy
+          path: package/
 
-      - name: Create tarball
+      - name: Create release tarball
         run: |
-          cd artifacts
-          tar -czvf nanokvm-server-riscv64.tar.gz nanokvm-server
-          sha256sum nanokvm-server-riscv64.tar.gz > nanokvm-server-riscv64.tar.gz.sha256
+          VERSION=${GITHUB_REF#refs/tags/}
+          cd package
+          tar -czvf ../nanokvm-rs-${VERSION}-riscv64.tar.gz .
+          cd ..
+          sha256sum nanokvm-rs-${VERSION}-riscv64.tar.gz > nanokvm-rs-${VERSION}-riscv64.tar.gz.sha256
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/nanokvm-server-riscv64.tar.gz
-            artifacts/nanokvm-server-riscv64.tar.gz.sha256
+            nanokvm-rs-*-riscv64.tar.gz
+            nanokvm-rs-*-riscv64.tar.gz.sha256
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          body: |
+            ## Installation
+
+            1. Download `nanokvm-rs-${{ github.ref_name }}-riscv64.tar.gz`
+            2. Copy to your NanoKVM device
+            3. Extract and run the install script:
+
+            ```bash
+            tar -xzf nanokvm-rs-*.tar.gz
+            cd nanokvm-rs-*
+            sudo ./install.sh
+            ```
+
+            ## What's Included
+
+            - `nanokvm-server` - Main server binary (RISC-V)
+            - `web/` - Web UI assets
+            - `install.sh` - Installation script
