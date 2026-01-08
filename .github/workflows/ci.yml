@@ -40,30 +40,8 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
         continue-on-error: true
 
-  build-native:
-    name: Build (Native x86_64)
-    runs-on: ubuntu-latest
-    needs: check
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-action@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build workspace
-        run: cargo build --workspace --release
-
   build-riscv:
-    name: Build (RISC-V Cross-compile)
+    name: Build (RISC-V)
     runs-on: ubuntu-latest
     needs: check
     steps:
@@ -105,7 +83,7 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-native, build-riscv]
+    needs: build-riscv
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
