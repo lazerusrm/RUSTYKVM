@@ -5,7 +5,8 @@ use tokio::fs;
 use tracing::{info, warn};
 
 // Default values as constants for clarity and reuse
-const DEFAULT_PROTO: &str = "https";
+// NOTE: Default to HTTP for safety - HTTPS requires valid TLS certs to exist
+const DEFAULT_PROTO: &str = "http";
 const DEFAULT_AUTH: &str = "enable";
 const DEFAULT_STUN: &str = "stun.l.google.com:19302";
 const DEFAULT_LOG_LEVEL: &str = "info";

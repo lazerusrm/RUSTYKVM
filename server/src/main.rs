@@ -452,9 +452,27 @@ async fn main() {
         let https_addr = bind_addr(config.port.https);
         let http_addr = bind_addr(config.port.http);
 
-        let tls_config = RustlsConfig::from_pem_file(&config.cert.crt, &config.cert.key)
-            .await
-            .expect("failed to load TLS certs");
+        let tls_config = match RustlsConfig::from_pem_file(&config.cert.crt, &config.cert.key).await {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                error!(
+                    "Failed to load TLS certs from {} and {}: {}",
+                    config.cert.crt, config.cert.key, e
+                );
+                error!("Falling back to HTTP mode. To use HTTPS, ensure certificate files exist.");
+                // Fall through to HTTP mode
+                let http_addr = bind_addr(config.port.http);
+                let listener = tokio::net::TcpListener::bind(&http_addr)
+                    .await
+                    .expect("HTTP bind failed");
+                info!("Server listening on {} (HTTP - TLS fallback)", http_addr);
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(shutdown_signal())
+                    .await
+                    .expect("HTTP server failed");
+                return;
+            }
+        };
 
         let redirect_app = Router::new().fallback(
             move |host: axum::http::HeaderMap, uri: axum::http::Uri| async move {
