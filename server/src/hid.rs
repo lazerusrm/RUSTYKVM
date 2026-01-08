@@ -7,7 +7,6 @@ use axum::{
 use hid::{Shortcut, ShortcutKey};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, error, info};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]

@@ -1,7 +1,6 @@
-use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use thiserror::Error;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 #[derive(Error, Debug)]
 pub enum AudioError {

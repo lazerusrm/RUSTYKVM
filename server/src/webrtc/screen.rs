@@ -1,12 +1,16 @@
+use parking_lot::RwLock;
+use serde::Deserialize;
+use std::sync::Arc;
+
+#[cfg(target_os = "linux")]
 use crate::AppState;
+#[cfg(target_os = "linux")]
 use axum::http::StatusCode;
+#[cfg(target_os = "linux")]
 use axum::{
     extract::{Json, State},
     response::IntoResponse,
 };
-use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 pub struct ScreenConfig {
     pub stream_type: String, // "mjpeg" or "h264"

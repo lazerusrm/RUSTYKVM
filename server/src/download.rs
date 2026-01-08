@@ -1,15 +1,13 @@
-use crate::AppState;
 use axum::http::StatusCode;
 use axum::{
     extract::{Json, Multipart},
     response::IntoResponse,
 };
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::fs;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info};
 
 const SENTINEL_PATH: &str = "/tmp/.download_in_progress";
 const DATA_DIR: &str = "/data";

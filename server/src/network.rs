@@ -1,8 +1,8 @@
 use axum::http::StatusCode;
 use axum::{extract::Json, response::IntoResponse};
-use network::{NetworkManager, WolEntry};
+use network::NetworkManager;
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
+use tracing::error;
 
 #[derive(Deserialize)]
 pub struct WakeOnLANReq {

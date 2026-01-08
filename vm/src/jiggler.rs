@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use tokio::sync::Mutex;
-use tracing::{debug, info};
+use tracing::debug;
 
 pub const JIGGLER_CONFIG_FILE: &str = "/etc/kvm/mouse-jiggler";
 const JIGGLER_INTERVAL: Duration = Duration::from_secs(15);

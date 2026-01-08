@@ -1,4 +1,4 @@
-use crate::webrtc::transport::{IceCandidate, PeerConnectionManager, SdpOffer};
+use crate::webrtc::transport::{IceCandidate, SdpOffer};
 use crate::AppState;
 use axum::{
     extract::{
@@ -33,7 +33,7 @@ async fn handle_ws_signaling(socket: WebSocket, state: Arc<AppState>) {
     let (msg_tx, mut msg_rx) = mpsc::channel::<SignalingMessage>(32);
 
     // Task to send messages to WebSocket
-    let mut ws_sender_task = tokio::spawn(async move {
+    let ws_sender_task = tokio::spawn(async move {
         while let Some(msg) = msg_rx.recv().await {
             if let Ok(json) = serde_json::to_string(&msg) {
                 if ws_sender.send(WsMessage::Text(json.into())).await.is_err() {

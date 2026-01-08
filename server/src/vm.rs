@@ -7,7 +7,9 @@ use axum::{
     },
     response::IntoResponse,
 };
-use futures::{SinkExt, StreamExt};
+#[cfg(target_os = "linux")]
+use futures::StreamExt;
+use futures::SinkExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::process::Command;
@@ -18,9 +20,6 @@ use std::os::unix::fs::PermissionsExt;
 
 #[cfg(target_os = "linux")]
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-
-#[cfg(target_os = "linux")]
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Debug, Deserialize)]
 pub struct SetGpioReq {

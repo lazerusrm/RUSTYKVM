@@ -1,5 +1,4 @@
 use axum::{
-    body::Body,
     extract::{Json, State},
     http::{header, HeaderMap, HeaderName, Request, StatusCode},
     middleware::Next,
@@ -14,17 +13,15 @@ static X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
 use crate::utils::decrypt_password;
 use crate::AppState;
 use bcrypt::{hash, verify, DEFAULT_COST};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use once_cell::sync::Lazy;
-use regex::Regex;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use tokio::fs;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
-use tracing::{error, info, warn};
+use tracing::error;
 
 const COOKIE_NAME: &str = "nano-kvm-token";
 const PWD_FILE: &str = "/etc/kvm/pwd";
@@ -141,7 +138,7 @@ pub async fn login_handler(
     headers: HeaderMap,
     Json(req): Json<LoginReq>,
 ) -> impl IntoResponse {
-    let ip_address = get_session_ip(&headers);
+    let _ip_address = get_session_ip(&headers);
 
     if state.config.authentication == "disable" {
         return (
@@ -155,7 +152,7 @@ pub async fn login_handler(
             .into_response();
     }
 
-    let mut account = get_account().await;
+    let account = get_account().await;
 
     let plain_password = decrypt_password(&req.password).unwrap_or(req.password.clone());
 

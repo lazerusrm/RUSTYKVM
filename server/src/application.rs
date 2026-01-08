@@ -1,7 +1,6 @@
-use crate::AppState;
 use axum::http::StatusCode;
 use axum::{
-    extract::{Json, Multipart, State},
+    extract::{Json, Multipart},
     response::IntoResponse,
 };
 use base64::Engine;
@@ -9,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use tracing::{error, info, warn};
 
 const STABLE_URL: &str = "https://cdn.sipeed.com/nanokvm";

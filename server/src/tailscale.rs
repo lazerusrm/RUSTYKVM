@@ -1,6 +1,6 @@
 use axum::http::StatusCode;
 use axum::{extract::Json, response::IntoResponse};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::process::Command;
 use tracing::{error, info};
 

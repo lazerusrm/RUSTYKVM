@@ -5,6 +5,7 @@ use cipher::{BlockDecryptMut, KeyIvInit};
 use std::env;
 use std::fs;
 use std::path::Path;
+#[cfg(target_os = "linux")]
 use walkdir::WalkDir;
 
 const SECRET_KEY_ENV: &str = "NANOKVM_SECRET_KEY";

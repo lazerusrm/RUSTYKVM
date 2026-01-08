@@ -1,6 +1,4 @@
-pub mod client;
 pub mod screen;
-pub mod signaling;
 pub mod transport;
 pub mod ws_signaling;
 
@@ -77,20 +75,3 @@ impl ClientCapabilities {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ParameterSets {
-    #[serde(skip)]
-    pub sps: Bytes,
-    #[serde(skip)]
-    pub pps: Bytes,
-    #[serde(skip)]
-    pub vps: Option<Bytes>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum QualityTier {
-    Low,
-    Medium,
-    High,
-    Auto,
-}

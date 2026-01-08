@@ -13,7 +13,7 @@ mod webrtc;
 
 use crate::download::*;
 use crate::webrtc::transport::{
-    IceCandidate, PeerConnectionManager, SharedPacket, WebRtcConfig, WhepEndpoint, WhepRequest,
+    IceCandidate, PeerConnectionManager, WebRtcConfig, WhepEndpoint, WhepRequest,
 };
 use crate::webrtc::ws_signaling::h264_ws_handler;
 use crate::webrtc::H264Frame;
@@ -25,20 +25,21 @@ use axum::{
     },
     middleware,
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{get, post},
     Json, Router,
 };
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::signal;
 use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 #[cfg(target_os = "linux")]
 use crate::webrtc::screen::{stop_frame_detect_handler, update_frame_detect_handler};
@@ -50,7 +51,7 @@ use crate::vm::{
     get_autostart_content_handler, get_autostart_handler, get_gpio_handler, get_hardware_handler,
     get_hdmi_state_handler, get_hostname_handler, get_info_handler, get_jiggler_handler,
     get_mdns_handler, get_oled_handler, get_scripts_handler, get_ssh_handler, get_swap_handler,
-    get_virtual_device_handler, get_web_title_handler, reboot_handler, reset_hdmi_handler,
+    get_virtual_device_handler, get_web_title_handler, reset_hdmi_handler,
     run_script_handler, set_gpio_handler, set_hostname_handler, set_jiggler_handler,
     set_oled_handler, set_screen_handler, set_swap_handler, set_tls_handler, set_web_title_handler,
     terminal_handler, update_virtual_device_handler, upload_autostart_handler,
@@ -82,6 +83,7 @@ use crate::storage_health::{
     detailed_health_handler, health_handler, health_status_handler, refresh_health_handler,
     HealthState,
 };
+#[cfg(target_os = "linux")]
 use crate::tailscale::{
     tailscale_down_handler, tailscale_install_handler, tailscale_login_handler,
     tailscale_logout_handler, tailscale_start_handler, tailscale_status_handler,
@@ -127,6 +129,9 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() {
+    // Create shutdown broadcast channel
+    let (_shutdown_tx, _) = broadcast::channel::<()>(1);
+
     // 1. Load Configuration
     let config = Arc::new(Config::load().await);
 
@@ -393,6 +398,7 @@ async fn main() {
         ));
 
     let app = Router::new()
+        .route("/health", get(health_check_handler))
         .route("/api/login", post(login_handler))
         .route("/api/logout", post(logout_handler))
         .route("/api/auth/login", post(login_handler))
@@ -492,7 +498,14 @@ async fn main() {
         });
 
         info!("Server listening on {} (HTTPS)", https_addr);
+        let handle = axum_server::Handle::new();
+        let shutdown_handle = handle.clone();
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            shutdown_handle.graceful_shutdown(Some(Duration::from_secs(10)));
+        });
         axum_server::bind_rustls(https_addr, tls_config)
+            .handle(handle)
             .serve(app.into_make_service())
             .await
             .expect(&format!("Failed to start HTTPS server on {}", https_addr));
@@ -503,9 +516,36 @@ async fn main() {
             .expect(&format!("Failed to bind HTTP listener to {}", http_addr));
         info!("Server listening on {} (HTTP)", http_addr);
         axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
             .await
             .expect("HTTP server failed");
     }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("Shutdown signal received, starting graceful shutdown...");
 }
 
 fn init_logging(config: &Config) -> Option<tracing_appender::non_blocking::WorkerGuard> {
@@ -770,6 +810,13 @@ async fn audio_hardware_loop(state: Arc<AppState>) {
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(|socket| handle_socket(socket, state))
+}
+
+async fn health_check_handler() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "ok",
+        "service": "nanokvm"
+    }))
 }
 
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
