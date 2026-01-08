@@ -173,39 +173,41 @@ jobs:
             fi
           done
 
-          # Create init script (NO LEADING WHITESPACE - critical for shebang)
-          sudo tee /mnt/nanokvm/etc/init.d/S95nanokvm > /dev/null << 'INITEOF'
-#!/bin/sh
-export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
-DAEMON=/kvmapp/nanokvm-server
-PIDFILE=/var/run/nanokvm.pid
-LOGFILE=/var/log/nanokvm.log
+          # Create init script using printf to avoid YAML/heredoc issues
+          sudo tee /mnt/nanokvm/etc/init.d/S95nanokvm > /dev/null << 'INITSCRIPT'
+          #!/bin/sh
+          export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
+          DAEMON=/kvmapp/nanokvm-server
+          PIDFILE=/var/run/nanokvm.pid
+          LOGFILE=/var/log/nanokvm.log
 
-case "$1" in
-  start)
-    echo "Starting NanoKVM-RS..."
-    cd /kvmapp
-    $DAEMON >> $LOGFILE 2>&1 &
-    echo $! > $PIDFILE
-    ;;
-  stop)
-    if [ -f $PIDFILE ]; then
-      kill $(cat $PIDFILE) 2>/dev/null
-      rm -f $PIDFILE
-    fi
-    ;;
-  restart)
-    $0 stop
-    sleep 1
-    $0 start
-    ;;
-  *)
-    echo "Usage: $0 {start|stop|restart}"
-    exit 1
-    ;;
-esac
-exit 0
-INITEOF
+          case "$1" in
+            start)
+              echo "Starting NanoKVM-RS..."
+              cd /kvmapp
+              $DAEMON >> $LOGFILE 2>&1 &
+              echo $! > $PIDFILE
+              ;;
+            stop)
+              if [ -f $PIDFILE ]; then
+                kill $(cat $PIDFILE) 2>/dev/null
+                rm -f $PIDFILE
+              fi
+              ;;
+            restart)
+              $0 stop
+              sleep 1
+              $0 start
+              ;;
+            *)
+              echo "Usage: $0 {start|stop|restart}"
+              exit 1
+              ;;
+          esac
+          exit 0
+          INITSCRIPT
+          # Remove leading whitespace from each line (the 10 spaces of indentation)
+          sudo sed -i 's/^          //' /mnt/nanokvm/etc/init.d/S95nanokvm
           sudo chmod +x /mnt/nanokvm/etc/init.d/S95nanokvm
 
           # Version marker
