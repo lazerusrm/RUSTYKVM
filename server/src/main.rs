@@ -229,10 +229,13 @@ async fn main() {
         tokio::spawn(async move {
             h264_hardware_loop(s2).await;
         });
-        let s3 = shared_state.clone();
-        tokio::spawn(async move {
-            audio_hardware_loop(s3).await;
-        });
+        #[cfg(feature = "audio")]
+        {
+            let s3 = shared_state.clone();
+            tokio::spawn(async move {
+                audio_hardware_loop(s3).await;
+            });
+        }
 
         // Periodic storage health check every 24 hours
         let health_state = shared_state.health_state.clone();
@@ -708,7 +711,7 @@ async fn whep_delete_handler(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "audio"))]
 async fn audio_hardware_loop(state: Arc<AppState>) {
     use audio::AudioCapturer;
     use opus::{Application, Channels, Encoder};

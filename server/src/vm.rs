@@ -261,34 +261,46 @@ pub async fn set_screen_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SetScreenReq>,
 ) -> impl IntoResponse {
-    let mut config = state.screen_config.write();
-
-    match req.screen_type.as_str() {
+    // Handle file writes outside the lock to avoid holding lock across await
+    let file_write: Option<(&str, String)> = match req.screen_type.as_str() {
         "type" => {
-            config.stream_type = if req.value == 0 {
-                "mjpeg".to_string()
-            } else {
-                "h264".to_string()
-            };
-            let _ = tokio::fs::write(SCREEN_TYPE_FILE, &config.stream_type).await;
+            let stream_type = if req.value == 0 { "mjpeg" } else { "h264" };
+            Some((SCREEN_TYPE_FILE, stream_type.to_string()))
         }
-        "fps" => {
-            config.fps = req.value as u16;
-            let _ = tokio::fs::write(SCREEN_FPS_FILE, config.fps.to_string()).await;
-        }
-        "quality" => {
-            config.quality = req.value as u16;
-            let _ = tokio::fs::write(SCREEN_QUALITY_FILE, config.quality.to_string()).await;
-        }
-        "gop" => {
-            config.gop = req.value as u8;
-            state.kvm.set_h264_gop(config.gop);
-        }
-        "resolution" => {
-            // Value is usually encoded, e.g. 0 for 1280x720?
-            // Go code just writes it.
-            let _ = tokio::fs::write(SCREEN_RES_FILE, req.value.to_string()).await;
-            match req.value {
+        "fps" => Some((SCREEN_FPS_FILE, req.value.to_string())),
+        "quality" => Some((SCREEN_QUALITY_FILE, req.value.to_string())),
+        "resolution" => Some((SCREEN_RES_FILE, req.value.to_string())),
+        "gop" => None,
+        _ => return StatusCode::BAD_REQUEST.into_response(),
+    };
+
+    // Do file write without holding the lock
+    if let Some((path, content)) = file_write {
+        let _ = tokio::fs::write(path, content).await;
+    }
+
+    // Now update the in-memory config
+    {
+        let mut config = state.screen_config.write();
+        match req.screen_type.as_str() {
+            "type" => {
+                config.stream_type = if req.value == 0 {
+                    "mjpeg".to_string()
+                } else {
+                    "h264".to_string()
+                };
+            }
+            "fps" => {
+                config.fps = req.value as u16;
+            }
+            "quality" => {
+                config.quality = req.value as u16;
+            }
+            "gop" => {
+                config.gop = req.value as u8;
+                state.kvm.set_h264_gop(config.gop);
+            }
+            "resolution" => match req.value {
                 0 => {
                     config.width = 1280;
                     config.height = 720;
@@ -310,9 +322,9 @@ pub async fn set_screen_handler(
                     config.height = 480;
                 }
                 _ => {}
-            }
+            },
+            _ => {}
         }
-        _ => return StatusCode::BAD_REQUEST.into_response(),
     }
 
     StatusCode::OK.into_response()
@@ -575,12 +587,14 @@ async fn handle_terminal_socket(mut socket: WebSocket) {
 
         let (mut ws_sender, mut ws_receiver) = socket.split();
 
+        let reader = std::sync::Arc::new(std::sync::Mutex::new(reader));
         let mut reader_task = tokio::spawn(async move {
-            let mut buf = [0u8; 1024];
             loop {
-                let n = tokio::task::spawn_blocking(move || {
+                let reader_clone = reader.clone();
+                let result = tokio::task::spawn_blocking(move || {
                     let mut b = [0u8; 1024];
-                    match reader.read(&mut b) {
+                    let mut guard = reader_clone.lock().unwrap();
+                    match guard.read(&mut b) {
                         Ok(n) => (b, n),
                         Err(_) => (b, 0),
                     }
@@ -588,9 +602,9 @@ async fn handle_terminal_socket(mut socket: WebSocket) {
                 .await
                 .unwrap();
 
-                if n.1 > 0 {
+                if result.1 > 0 {
                     if ws_sender
-                        .send(Message::Binary(n.0[..n.1].to_vec().into()))
+                        .send(Message::Binary(result.0[..result.1].to_vec().into()))
                         .await
                         .is_err()
                     {
