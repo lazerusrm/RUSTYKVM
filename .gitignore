@@ -1,6 +1,14 @@
+# Build artifacts
 /target/
-**/*.md
-.DS_Store
-*.rs.bk
 debug/
 release/
+*.rs.bk
+
+# OS files
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

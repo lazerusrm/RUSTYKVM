@@ -1,0 +1,59 @@
+NanoKVM-RS - Rust Implementation of NanoKVM Server
+==================================================
+
+Copyright (c) 2024-2025 NanoKVM-RS Contributors
+
+This project is a Rust reimplementation of the NanoKVM server software,
+originally written in Go by Sipeed.
+
+ATTRIBUTION AND CREDITS
+-----------------------
+
+### Original NanoKVM Project
+
+This project is based on and inspired by:
+
+- **NanoKVM** by Sipeed
+  - Repository: https://github.com/sipeed/NanoKVM
+  - License: GPL-3.0
+  - Copyright (c) Sipeed
+
+The original NanoKVM project provided the reference implementation and
+architecture that this Rust port is based upon.
+
+### Hardware Libraries (dl_lib/)
+
+The binary libraries in the `dl_lib/` directory are provided by:
+
+- **Sipeed** (https://sipeed.com) - NanoKVM hardware manufacturer
+- **Sophgo/Cvitek** - SG2002 SoC vendor
+
+These libraries are distributed as part of the NanoKVM project and are
+required for hardware video capture functionality.
+
+### Third-Party Rust Crates
+
+This project uses various open-source Rust crates. See Cargo.toml for
+the complete list. Notable dependencies include:
+
+- **axum** - Web framework (MIT)
+- **tokio** - Async runtime (MIT)
+- **webrtc** - WebRTC implementation (MIT/Apache-2.0)
+- **serde** - Serialization (MIT/Apache-2.0)
+
+LICENSE
+-------
+
+This project is licensed under the GNU General Public License v3.0.
+See the LICENSE file for the full license text.
+
+DISCLAIMER
+----------
+
+This software is provided "as is" without warranty of any kind. The authors
+and contributors are not responsible for any damages arising from the use
+of this software.
+
+The hardware libraries (dl_lib/*.so) are provided by their respective
+copyright holders and may have additional terms. Please refer to the
+original NanoKVM project for details.

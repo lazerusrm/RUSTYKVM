@@ -11,6 +11,11 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+license = "GPL-3.0"
+repository = "https://github.com/lazerusrm/RUSTYKVM"
+edition = "2021"
+
 [profile.release]
 opt-level = 3
 lto = true

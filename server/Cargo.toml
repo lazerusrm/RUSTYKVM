@@ -2,6 +2,11 @@
 name = "nanokvm-server"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0"
+description = "Rust implementation of NanoKVM server - IP-KVM for remote machine control"
+repository = "https://github.com/lazerusrm/RUSTYKVM"
+keywords = ["kvm", "ip-kvm", "remote-access", "nanokvm"]
+categories = ["network-programming", "hardware-support"]
 
 [features]
 default = []
