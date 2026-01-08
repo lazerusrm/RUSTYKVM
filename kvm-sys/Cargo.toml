@@ -8,5 +8,4 @@ links = "kvm"
 libc = "0.2"
 
 [build-dependencies]
-# Using a fixed version or latest within 0.1
-# bindgen = "0.71"
+cc = "1.0"
