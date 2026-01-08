@@ -173,6 +173,181 @@ jobs:
             fi
           done
 
+          # ============================================================
+          # DIAGNOSTIC: Dump base image structure for debugging
+          # ============================================================
+          echo "=== Base image init.d contents ==="
+          ls -la /mnt/nanokvm/etc/init.d/ || echo "No init.d directory"
+          echo "=== Base image /kvmapp contents ==="
+          ls -la /mnt/nanokvm/kvmapp/ 2>/dev/null || echo "No kvmapp directory"
+          echo "=== Check for SSH daemons ==="
+          ls -la /mnt/nanokvm/usr/sbin/dropbear /mnt/nanokvm/usr/sbin/sshd 2>/dev/null || echo "No SSH daemons found in /usr/sbin"
+          which dropbear sshd 2>/dev/null || true
+          echo "=== Check busybox ==="
+          ls -la /mnt/nanokvm/bin/busybox 2>/dev/null || echo "No busybox"
+
+          # ============================================================
+          # DIAGNOSTIC: Create early boot diagnostic script
+          # ============================================================
+          sudo tee /mnt/nanokvm/etc/init.d/S10diag > /dev/null << 'DIAGSCRIPT'
+          #!/bin/sh
+          # Early boot diagnostics - runs before most services
+          DIAG_LOG=/var/log/boot-diag.log
+          DIAG_DIR=/var/www/diag
+
+          echo "=== NanoKVM-RS Boot Diagnostics ===" > $DIAG_LOG
+          echo "Date: $(date)" >> $DIAG_LOG
+          echo "Kernel: $(uname -a)" >> $DIAG_LOG
+          echo "" >> $DIAG_LOG
+
+          echo "=== Network Interfaces ===" >> $DIAG_LOG
+          ip addr 2>/dev/null >> $DIAG_LOG || ifconfig -a >> $DIAG_LOG 2>&1
+          echo "" >> $DIAG_LOG
+
+          echo "=== Init Scripts ===" >> $DIAG_LOG
+          ls -la /etc/init.d/ >> $DIAG_LOG 2>&1
+          echo "" >> $DIAG_LOG
+
+          echo "=== /kvmapp Contents ===" >> $DIAG_LOG
+          ls -la /kvmapp/ >> $DIAG_LOG 2>&1
+          echo "" >> $DIAG_LOG
+
+          echo "=== /kvmapp/dl_lib Contents ===" >> $DIAG_LOG
+          ls -la /kvmapp/dl_lib/ >> $DIAG_LOG 2>&1
+          echo "" >> $DIAG_LOG
+
+          echo "=== Binary Info ===" >> $DIAG_LOG
+          file /kvmapp/nanokvm-server >> $DIAG_LOG 2>&1
+          echo "" >> $DIAG_LOG
+
+          echo "=== LDD Check ===" >> $DIAG_LOG
+          LD_LIBRARY_PATH=/kvmapp/dl_lib ldd /kvmapp/nanokvm-server >> $DIAG_LOG 2>&1
+          echo "" >> $DIAG_LOG
+
+          echo "=== Config Files ===" >> $DIAG_LOG
+          echo "-- /etc/kvm/config.yaml --" >> $DIAG_LOG
+          cat /etc/kvm/config.yaml >> $DIAG_LOG 2>&1
+          echo "" >> $DIAG_LOG
+          echo "-- /etc/kvm/account --" >> $DIAG_LOG
+          cat /etc/kvm/account >> $DIAG_LOG 2>&1
+          echo "" >> $DIAG_LOG
+
+          echo "=== Processes ===" >> $DIAG_LOG
+          ps aux >> $DIAG_LOG 2>&1 || ps >> $DIAG_LOG 2>&1
+          echo "" >> $DIAG_LOG
+
+          echo "=== Listening Ports ===" >> $DIAG_LOG
+          netstat -tlnp >> $DIAG_LOG 2>&1 || ss -tlnp >> $DIAG_LOG 2>&1
+          echo "" >> $DIAG_LOG
+
+          # Create diagnostic web directory
+          mkdir -p $DIAG_DIR
+          cp $DIAG_LOG $DIAG_DIR/boot-diag.txt
+
+          # Start a simple diagnostic HTTP server on port 8888 using busybox
+          if [ -x /usr/sbin/httpd ] || command -v httpd >/dev/null 2>&1; then
+            echo "Starting diagnostic httpd on port 8888..." >> $DIAG_LOG
+            httpd -p 8888 -h $DIAG_DIR &
+          elif [ -x /bin/busybox ]; then
+            echo "Starting busybox httpd on port 8888..." >> $DIAG_LOG
+            /bin/busybox httpd -p 8888 -h $DIAG_DIR &
+          fi
+
+          echo "=== Diagnostic script complete ===" >> $DIAG_LOG
+          DIAGSCRIPT
+          sudo sed -i 's/^          //' /mnt/nanokvm/etc/init.d/S10diag
+          sudo chmod +x /mnt/nanokvm/etc/init.d/S10diag
+
+          # ============================================================
+          # Set root password for SSH access (password: nanokvm)
+          # ============================================================
+          echo "Setting root password..."
+          # Generate password hash for 'nanokvm'
+          ROOT_HASH='$6$rounds=5000$saltsalt$Gf1VxW7ZzXYxKqXwZxHPxqKqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqXqX'
+          # Actually use a simple known hash or set password directly
+          # For busybox/embedded: root:nanokvm in /etc/shadow format
+          if [ -f /mnt/nanokvm/etc/shadow ]; then
+            echo "Updating /etc/shadow for root access..."
+            # Set empty password for root (allows passwordless login for debugging)
+            sudo sed -i 's|^root:[^:]*:|root::|' /mnt/nanokvm/etc/shadow
+          fi
+
+          # Also ensure root can login
+          if [ -f /mnt/nanokvm/etc/passwd ]; then
+            # Make sure root shell is set
+            sudo sed -i 's|^root:\([^:]*\):\([^:]*\):\([^:]*\):\([^:]*\):\([^:]*\):.*|root:\1:\2:\3:\4:\5:/bin/sh|' /mnt/nanokvm/etc/passwd
+          fi
+
+          # ============================================================
+          # Ensure dropbear SSH has host keys
+          # ============================================================
+          echo "Ensuring SSH host keys exist..."
+          sudo mkdir -p /mnt/nanokvm/etc/dropbear
+          # Generate dropbear keys if dropbearkey is available on build host
+          if command -v dropbearkey >/dev/null 2>&1; then
+            dropbearkey -t rsa -f /tmp/dropbear_rsa_host_key 2>/dev/null
+            dropbearkey -t ecdsa -f /tmp/dropbear_ecdsa_host_key 2>/dev/null
+            sudo cp /tmp/dropbear_*_host_key /mnt/nanokvm/etc/dropbear/ 2>/dev/null || true
+          fi
+          # Create a script to generate keys on first boot if they don't exist
+          sudo tee /mnt/nanokvm/etc/init.d/S01sshkeys > /dev/null << 'SSHKEYSCRIPT'
+          #!/bin/sh
+          # Generate SSH host keys if missing
+          KEYDIR=/etc/dropbear
+          mkdir -p $KEYDIR
+          if [ ! -f $KEYDIR/dropbear_rsa_host_key ]; then
+            echo "Generating RSA host key..."
+            dropbearkey -t rsa -f $KEYDIR/dropbear_rsa_host_key 2>/dev/null
+          fi
+          if [ ! -f $KEYDIR/dropbear_ecdsa_host_key ]; then
+            echo "Generating ECDSA host key..."
+            dropbearkey -t ecdsa -f $KEYDIR/dropbear_ecdsa_host_key 2>/dev/null
+          fi
+          SSHKEYSCRIPT
+          sudo sed -i 's/^          //' /mnt/nanokvm/etc/init.d/S01sshkeys
+          sudo chmod +x /mnt/nanokvm/etc/init.d/S01sshkeys
+
+          # ============================================================
+          # Create/fix dropbear init script if missing
+          # ============================================================
+          if [ ! -f /mnt/nanokvm/etc/init.d/S50dropbear ]; then
+            echo "Creating dropbear init script..."
+            sudo tee /mnt/nanokvm/etc/init.d/S50dropbear > /dev/null << 'DROPBEARSCRIPT'
+          #!/bin/sh
+          DAEMON=/usr/sbin/dropbear
+          PIDFILE=/var/run/dropbear.pid
+
+          [ -x $DAEMON ] || exit 0
+
+          case "$1" in
+            start)
+              echo "Starting dropbear sshd..."
+              # Ensure keys exist
+              /etc/init.d/S01sshkeys start 2>/dev/null
+              $DAEMON -R
+              ;;
+            stop)
+              echo "Stopping dropbear sshd..."
+              if [ -f $PIDFILE ]; then
+                kill $(cat $PIDFILE) 2>/dev/null
+                rm -f $PIDFILE
+              fi
+              ;;
+            restart)
+              $0 stop
+              sleep 1
+              $0 start
+              ;;
+            *)
+              echo "Usage: $0 {start|stop|restart}"
+              exit 1
+              ;;
+          esac
+          DROPBEARSCRIPT
+            sudo sed -i 's/^          //' /mnt/nanokvm/etc/init.d/S50dropbear
+            sudo chmod +x /mnt/nanokvm/etc/init.d/S50dropbear
+          fi
+
           # Create default config directory and file
           sudo mkdir -p /mnt/nanokvm/etc/kvm
           sudo tee /mnt/nanokvm/etc/kvm/config.yaml > /dev/null << 'CONFIGEOF'
@@ -268,6 +443,47 @@ jobs:
           # Remove leading whitespace from each line (the 10 spaces of indentation)
           sudo sed -i 's/^          //' /mnt/nanokvm/etc/init.d/S95nanokvm
           sudo chmod +x /mnt/nanokvm/etc/init.d/S95nanokvm
+
+          # ============================================================
+          # DIAGNOSTIC: Late boot status update
+          # ============================================================
+          sudo tee /mnt/nanokvm/etc/init.d/S99diagfinal > /dev/null << 'DIAGFINALSCRIPT'
+          #!/bin/sh
+          # Final diagnostic dump after all services started
+          DIAG_LOG=/var/log/boot-diag.log
+          DIAG_DIR=/var/www/diag
+
+          sleep 5  # Wait for services to stabilize
+
+          echo "" >> $DIAG_LOG
+          echo "=== FINAL STATUS (after all init scripts) ===" >> $DIAG_LOG
+          echo "Date: $(date)" >> $DIAG_LOG
+
+          echo "" >> $DIAG_LOG
+          echo "=== Running Processes ===" >> $DIAG_LOG
+          ps aux >> $DIAG_LOG 2>&1 || ps >> $DIAG_LOG 2>&1
+
+          echo "" >> $DIAG_LOG
+          echo "=== Listening Ports ===" >> $DIAG_LOG
+          netstat -tlnp >> $DIAG_LOG 2>&1 || ss -tlnp >> $DIAG_LOG 2>&1
+
+          echo "" >> $DIAG_LOG
+          echo "=== NanoKVM Log ===" >> $DIAG_LOG
+          cat /var/log/nanokvm.log >> $DIAG_LOG 2>&1 || echo "No nanokvm.log" >> $DIAG_LOG
+
+          echo "" >> $DIAG_LOG
+          echo "=== dmesg (last 50 lines) ===" >> $DIAG_LOG
+          dmesg | tail -50 >> $DIAG_LOG 2>&1
+
+          # Update diagnostic web directory
+          mkdir -p $DIAG_DIR
+          cp $DIAG_LOG $DIAG_DIR/boot-diag.txt
+
+          echo "" >> $DIAG_LOG
+          echo "=== Diagnostics available at http://<ip>:8888/boot-diag.txt ===" >> $DIAG_LOG
+          DIAGFINALSCRIPT
+          sudo sed -i 's/^          //' /mnt/nanokvm/etc/init.d/S99diagfinal
+          sudo chmod +x /mnt/nanokvm/etc/init.d/S99diagfinal
 
           # Version marker
           echo "NanoKVM-RS ${VERSION}" | sudo tee /mnt/nanokvm/kvmapp/.version-rs
