@@ -12,7 +12,9 @@ fn main() {
     if use_stub {
         // Create stub library for CI builds
         let stub_c = out_dir.join("kvm_stub.c");
-        fs::write(&stub_c, r#"
+        fs::write(
+            &stub_c,
+            r#"
 // Stub implementations for CI builds
 // These functions exist on the real NanoKVM hardware
 
@@ -45,12 +47,12 @@ void set_frame_detect(unsigned char frame_detect) { (void)frame_detect; }
 
 void kvmv_deinit(void) {}
 unsigned char kvmv_hdmi_control(unsigned char en) { (void)en; return 0; }
-"#).expect("Failed to write stub C file");
+"#,
+        )
+        .expect("Failed to write stub C file");
 
         // Compile the stub
-        cc::Build::new()
-            .file(&stub_c)
-            .compile("kvm");
+        cc::Build::new().file(&stub_c).compile("kvm");
 
         println!("cargo:warning=Building with stub libkvm (CI mode)");
     } else {
