@@ -374,27 +374,28 @@ jobs:
           ls -la /mnt/nanokvm/bin/busybox 2>/dev/null || echo "No busybox"
 
           # ============================================================
-          # CHECK AND DISPLAY kvmapp/system (the REAL init.d location!)
+          # CHECK AND DISPLAY kvmapp/system/init.d (the REAL init.d location!)
           # ============================================================
           echo ""
-          echo "=== /kvmapp/system/ (actual init scripts location) ==="
-          ls -la /mnt/nanokvm/kvmapp/system/ 2>/dev/null || echo "Directory doesn't exist"
+          echo "=== /kvmapp/system/init.d/ (CORRECT init scripts location) ==="
+          ls -la /mnt/nanokvm/kvmapp/system/init.d/ 2>/dev/null || echo "Directory doesn't exist"
           echo ""
-          for script in /mnt/nanokvm/kvmapp/system/S*; do
-            if [ -f "$script" ]; then
-              echo "--- $(basename $script) ---"
-              head -30 "$script"
-              echo "..."
-              echo ""
-            fi
-          done
+          echo "=== Showing original S95nanokvm script ==="
+          cat /mnt/nanokvm/kvmapp/system/init.d/S95nanokvm 2>/dev/null || echo "S95nanokvm not found"
+          echo ""
+          echo "=== /kvmapp/server/ directory (where binary should be) ==="
+          ls -la /mnt/nanokvm/kvmapp/server/ 2>/dev/null || echo "Directory doesn't exist"
+          echo ""
+          echo "=== /kvmapp/kvm_system/ directory (required component) ==="
+          ls -la /mnt/nanokvm/kvmapp/kvm_system/ 2>/dev/null || echo "Directory doesn't exist"
+          echo ""
 
           # ============================================================
           # DIAGNOSTIC: Create early boot diagnostic script
-          # Put in BOTH locations to be safe
+          # Put in the CORRECT location: /kvmapp/system/init.d/
           # ============================================================
-          sudo mkdir -p /mnt/nanokvm/kvmapp/system
-          sudo tee /mnt/nanokvm/kvmapp/system/S10diag > /dev/null << 'DIAGSCRIPT'
+          sudo mkdir -p /mnt/nanokvm/kvmapp/system/init.d
+          sudo tee /mnt/nanokvm/kvmapp/system/init.d/S10diag > /dev/null << 'DIAGSCRIPT'
           #!/bin/sh
           # Early boot diagnostics - runs before most services
           DIAG_LOG=/var/log/boot-diag.log
@@ -460,10 +461,8 @@ jobs:
 
           echo "=== Diagnostic script complete ===" >> $DIAG_LOG
           DIAGSCRIPT
-          sudo sed -i 's/^          //' /mnt/nanokvm/kvmapp/system/S10diag
-          sudo chmod +x /mnt/nanokvm/kvmapp/system/S10diag
-          # Also copy to /etc/init.d as fallback
-          sudo cp /mnt/nanokvm/kvmapp/system/S10diag /mnt/nanokvm/etc/init.d/S10diag 2>/dev/null || true
+          sudo sed -i 's/^          //' /mnt/nanokvm/kvmapp/system/init.d/S10diag
+          sudo chmod +x /mnt/nanokvm/kvmapp/system/init.d/S10diag
 
           # ============================================================
           # Set root password for SSH access (password: nanokvm)
@@ -497,7 +496,7 @@ jobs:
             sudo cp /tmp/dropbear_*_host_key /mnt/nanokvm/etc/dropbear/ 2>/dev/null || true
           fi
           # Create a script to generate keys on first boot if they don't exist
-          sudo tee /mnt/nanokvm/kvmapp/system/S01sshkeys > /dev/null << 'SSHKEYSCRIPT'
+          sudo tee /mnt/nanokvm/kvmapp/system/init.d/S01sshkeys > /dev/null << 'SSHKEYSCRIPT'
           #!/bin/sh
           # Generate SSH host keys if missing
           KEYDIR=/etc/dropbear
@@ -511,20 +510,20 @@ jobs:
             dropbearkey -t ecdsa -f $KEYDIR/dropbear_ecdsa_host_key 2>/dev/null
           fi
           SSHKEYSCRIPT
-          sudo sed -i 's/^          //' /mnt/nanokvm/kvmapp/system/S01sshkeys
-          sudo chmod +x /mnt/nanokvm/kvmapp/system/S01sshkeys
+          sudo sed -i 's/^          //' /mnt/nanokvm/kvmapp/system/init.d/S01sshkeys
+          sudo chmod +x /mnt/nanokvm/kvmapp/system/init.d/S01sshkeys
 
           # ============================================================
-          # Create/fix dropbear init script if missing (in kvmapp/system)
-          # The original image should have S50sshd in /kvmapp/system/
+          # Create/fix dropbear init script if missing (in kvmapp/system/init.d)
+          # The original image should have S50sshd in /kvmapp/system/init.d/
           # ============================================================
           echo "Checking for existing SSH init scripts..."
-          ls -la /mnt/nanokvm/kvmapp/system/S*ssh* 2>/dev/null || echo "No SSH scripts in kvmapp/system"
+          ls -la /mnt/nanokvm/kvmapp/system/init.d/S*ssh* 2>/dev/null || echo "No SSH scripts in kvmapp/system/init.d"
 
           # Don't override if S50sshd exists - just make sure it works
-          if [ ! -f /mnt/nanokvm/kvmapp/system/S50sshd ]; then
-            echo "Creating S50sshd in kvmapp/system..."
-            sudo tee /mnt/nanokvm/kvmapp/system/S50sshd > /dev/null << 'DROPBEARSCRIPT'
+          if [ ! -f /mnt/nanokvm/kvmapp/system/init.d/S50sshd ]; then
+            echo "Creating S50sshd in kvmapp/system/init.d..."
+            sudo tee /mnt/nanokvm/kvmapp/system/init.d/S50sshd > /dev/null << 'DROPBEARSCRIPT'
           #!/bin/sh
           DAEMON=/usr/sbin/dropbear
           PIDFILE=/var/run/dropbear.pid
@@ -558,8 +557,8 @@ jobs:
               ;;
           esac
           DROPBEARSCRIPT
-            sudo sed -i 's/^          //' /mnt/nanokvm/kvmapp/system/S50sshd
-            sudo chmod +x /mnt/nanokvm/kvmapp/system/S50sshd
+            sudo sed -i 's/^          //' /mnt/nanokvm/kvmapp/system/init.d/S50sshd
+            sudo chmod +x /mnt/nanokvm/kvmapp/system/init.d/S50sshd
           fi
 
           # Create default config directory and file
@@ -605,75 +604,37 @@ jobs:
           fi
 
           # ============================================================
-          # Create S95nanokvm init script in /kvmapp/system/ (the correct location!)
+          # DO NOT replace S95nanokvm - let original script run!
+          # The original script copies /kvmapp/server/ to /tmp/server/ and runs from there.
+          # We just need to replace the binary at /kvmapp/server/NanoKVM-Server
           # ============================================================
-          echo "Installing S95nanokvm init script to /kvmapp/system/..."
+          echo "NOT replacing S95nanokvm - using original init script"
+          echo "Our binary is already at /kvmapp/server/NanoKVM-Server"
 
-          # Backup original S95nanokvm if it exists
-          if [ -f /mnt/nanokvm/kvmapp/system/S95nanokvm ]; then
-            echo "Backing up original S95nanokvm..."
-            sudo mv /mnt/nanokvm/kvmapp/system/S95nanokvm /mnt/nanokvm/kvmapp/system/S95nanokvm.original
-          fi
-
-          sudo tee /mnt/nanokvm/kvmapp/system/S95nanokvm > /dev/null << 'INITSCRIPT'
+          # Add a pre-launch diagnostic script (runs before S95nanokvm)
+          sudo tee /mnt/nanokvm/kvmapp/system/init.d/S94prediag > /dev/null << 'PREDIAGSCRIPT'
           #!/bin/sh
-          export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
-          DAEMON=/kvmapp/nanokvm-server
-          PIDFILE=/var/run/nanokvm.pid
-          LOGFILE=/var/log/nanokvm.log
-
-          case "$1" in
-            start)
-              echo "Starting NanoKVM-RS..." | tee -a $LOGFILE
-              echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> $LOGFILE
-              cd /kvmapp
-              # Check if binary exists and is executable
-              if [ ! -x $DAEMON ]; then
-                echo "ERROR: $DAEMON not found or not executable" | tee -a $LOGFILE
-                exit 1
-              fi
-              # List libraries for debugging
-              ls -la /kvmapp/dl_lib/ >> $LOGFILE 2>&1
-              # Start the daemon
-              $DAEMON >> $LOGFILE 2>&1 &
-              echo $! > $PIDFILE
-              sleep 2
-              # Check if it's still running
-              if kill -0 $(cat $PIDFILE) 2>/dev/null; then
-                echo "NanoKVM-RS started successfully (PID: $(cat $PIDFILE))" | tee -a $LOGFILE
-              else
-                echo "ERROR: NanoKVM-RS failed to start. Check $LOGFILE" | tee -a $LOGFILE
-                cat $LOGFILE | tail -50
-              fi
-              ;;
-            stop)
-              if [ -f $PIDFILE ]; then
-                kill $(cat $PIDFILE) 2>/dev/null
-                rm -f $PIDFILE
-              fi
-              ;;
-            restart)
-              $0 stop
-              sleep 1
-              $0 start
-              ;;
-            *)
-              echo "Usage: $0 {start|stop|restart}"
-              exit 1
-              ;;
-          esac
-          exit 0
-          INITSCRIPT
-          # Remove leading whitespace from each line (the 10 spaces of indentation)
-          sudo sed -i 's/^          //' /mnt/nanokvm/kvmapp/system/S95nanokvm
-          sudo chmod +x /mnt/nanokvm/kvmapp/system/S95nanokvm
-          echo "S95nanokvm installed to /kvmapp/system/"
-          cat /mnt/nanokvm/kvmapp/system/S95nanokvm | head -20
+          # Pre-launch diagnostic - runs just before S95nanokvm
+          DIAG_LOG=/var/log/nanokvm-prediag.log
+          echo "=== Pre-launch diagnostics ===" > $DIAG_LOG
+          echo "Date: $(date)" >> $DIAG_LOG
+          echo "Checking /kvmapp/server/:" >> $DIAG_LOG
+          ls -la /kvmapp/server/ >> $DIAG_LOG 2>&1
+          echo "Checking /tmp/server/ (should not exist yet):" >> $DIAG_LOG
+          ls -la /tmp/server/ >> $DIAG_LOG 2>&1 || echo "Not yet created" >> $DIAG_LOG
+          echo "Binary file info:" >> $DIAG_LOG
+          file /kvmapp/server/NanoKVM-Server >> $DIAG_LOG 2>&1
+          echo "LD_LIBRARY_PATH check:" >> $DIAG_LOG
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> $DIAG_LOG
+          ls -la /kvmapp/dl_lib/ >> $DIAG_LOG 2>&1
+          PREDIAGSCRIPT
+          sudo sed -i 's/^          //' /mnt/nanokvm/kvmapp/system/init.d/S94prediag
+          sudo chmod +x /mnt/nanokvm/kvmapp/system/init.d/S94prediag
 
           # ============================================================
-          # DIAGNOSTIC: Late boot status update (in kvmapp/system)
+          # DIAGNOSTIC: Late boot status update (in kvmapp/system/init.d)
           # ============================================================
-          sudo tee /mnt/nanokvm/kvmapp/system/S99diagfinal > /dev/null << 'DIAGFINALSCRIPT'
+          sudo tee /mnt/nanokvm/kvmapp/system/init.d/S99diagfinal > /dev/null << 'DIAGFINALSCRIPT'
           #!/bin/sh
           # Final diagnostic dump after all services started
           DIAG_LOG=/var/log/boot-diag.log
@@ -708,15 +669,18 @@ jobs:
           echo "" >> $DIAG_LOG
           echo "=== Diagnostics available at http://<ip>:8888/boot-diag.txt ===" >> $DIAG_LOG
           DIAGFINALSCRIPT
-          sudo sed -i 's/^          //' /mnt/nanokvm/kvmapp/system/S99diagfinal
-          sudo chmod +x /mnt/nanokvm/kvmapp/system/S99diagfinal
+          sudo sed -i 's/^          //' /mnt/nanokvm/kvmapp/system/init.d/S99diagfinal
+          sudo chmod +x /mnt/nanokvm/kvmapp/system/init.d/S99diagfinal
 
           # ============================================================
           # Final verification: Show what scripts we've installed
           # ============================================================
           echo ""
-          echo "=== INSTALLED SCRIPTS IN /kvmapp/system/ ==="
-          ls -la /mnt/nanokvm/kvmapp/system/
+          echo "=== FINAL STATE: /kvmapp/system/init.d/ ==="
+          ls -la /mnt/nanokvm/kvmapp/system/init.d/
+          echo ""
+          echo "=== FINAL STATE: /kvmapp/server/ ==="
+          ls -la /mnt/nanokvm/kvmapp/server/
           echo ""
 
           # Version marker
