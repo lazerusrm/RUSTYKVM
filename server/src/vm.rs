@@ -7,9 +7,9 @@ use axum::{
     },
     response::IntoResponse,
 };
+use futures::SinkExt;
 #[cfg(target_os = "linux")]
 use futures::StreamExt;
-use futures::SinkExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::process::Command;

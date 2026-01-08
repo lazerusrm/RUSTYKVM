@@ -51,11 +51,10 @@ use crate::vm::{
     get_autostart_content_handler, get_autostart_handler, get_gpio_handler, get_hardware_handler,
     get_hdmi_state_handler, get_hostname_handler, get_info_handler, get_jiggler_handler,
     get_mdns_handler, get_oled_handler, get_scripts_handler, get_ssh_handler, get_swap_handler,
-    get_virtual_device_handler, get_web_title_handler, reset_hdmi_handler,
-    run_script_handler, set_gpio_handler, set_hostname_handler, set_jiggler_handler,
-    set_oled_handler, set_screen_handler, set_swap_handler, set_tls_handler, set_web_title_handler,
-    terminal_handler, update_virtual_device_handler, upload_autostart_handler,
-    upload_script_handler,
+    get_virtual_device_handler, get_web_title_handler, reset_hdmi_handler, run_script_handler,
+    set_gpio_handler, set_hostname_handler, set_jiggler_handler, set_oled_handler,
+    set_screen_handler, set_swap_handler, set_tls_handler, set_web_title_handler, terminal_handler,
+    update_virtual_device_handler, upload_autostart_handler, upload_script_handler,
 };
 
 use crate::application::{
