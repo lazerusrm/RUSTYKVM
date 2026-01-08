@@ -343,29 +343,29 @@ jobs:
           sudo cp -r web /mnt/nanokvm/kvmapp/web-rs 2>/dev/null || true
 
           # ============================================================
-          # DIAGNOSTIC BUILD: Do NOT replace original binary!
-          # Just add our binary alongside and see if system boots
+          # Replace original binary with our Rust version
+          # The TLS crash bug is now fixed - safe to replace
           # ============================================================
-          echo "=== DIAGNOSTIC MODE: NOT replacing original NanoKVM-Server ==="
-          echo "=== Original Go binary will run, we just add diagnostics ==="
+          echo "=== Replacing original NanoKVM-Server with Rust version ==="
 
           # Show what original binary looks like
           if [ -f /mnt/nanokvm/kvmapp/server/NanoKVM-Server ]; then
             echo "Original binary info:"
             ls -la /mnt/nanokvm/kvmapp/server/NanoKVM-Server
             file /mnt/nanokvm/kvmapp/server/NanoKVM-Server
+            echo "Backing up original..."
+            sudo mv /mnt/nanokvm/kvmapp/server/NanoKVM-Server /mnt/nanokvm/kvmapp/server/NanoKVM-Server.go.bak
           else
             echo "WARNING: No original binary found at /kvmapp/server/NanoKVM-Server"
+            sudo mkdir -p /mnt/nanokvm/kvmapp/server
           fi
 
-          # Put our binary in a DIFFERENT location (don't replace original)
-          sudo mkdir -p /mnt/nanokvm/kvmapp/nanokvm-rs
-          sudo cp binary/nanokvm-server /mnt/nanokvm/kvmapp/nanokvm-rs/nanokvm-server
-          sudo chmod +x /mnt/nanokvm/kvmapp/nanokvm-rs/nanokvm-server
-          echo "Our Rust binary installed to /kvmapp/nanokvm-rs/nanokvm-server (NOT replacing original)"
-
-          # DO NOT disable any original init scripts - let the original system work!
-          echo "=== NOT modifying any original files ==="
+          # Install our Rust binary in place of the original
+          sudo cp binary/nanokvm-server /mnt/nanokvm/kvmapp/server/NanoKVM-Server
+          sudo chmod +x /mnt/nanokvm/kvmapp/server/NanoKVM-Server
+          echo "Rust binary installed to /kvmapp/server/NanoKVM-Server"
+          ls -la /mnt/nanokvm/kvmapp/server/
+          file /mnt/nanokvm/kvmapp/server/NanoKVM-Server
 
           # ============================================================
           # DIAGNOSTIC: Dump base image structure for debugging
