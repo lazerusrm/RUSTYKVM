@@ -168,10 +168,7 @@ async fn read_io_errors() -> (u32, u32) {
 
 async fn read_capacity() -> u64 {
     let size_path = "/sys/block/mmcblk0/size";
-    let sectors = match read_u64_from_file(size_path).await {
-        Some(s) => s,
-        None => 0,
-    };
+    let sectors = read_u64_from_file(size_path).await.unwrap_or_default();
     sectors * 512
 }
 
