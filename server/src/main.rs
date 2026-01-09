@@ -450,7 +450,7 @@ async fn main() {
         )
         .route("/api/passkey/qr", get(qr_code_handler))
         .nest("/api", api_routes)
-        .nest_service("/", ServeDir::new(web_path))
+        .fallback_service(ServeDir::new(web_path))
         .layer(CompressionLayer::new())
         .layer(
             CorsLayer::new()
