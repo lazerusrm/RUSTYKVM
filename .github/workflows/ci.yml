@@ -85,6 +85,20 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-riscv-musl-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Create linker wrapper script
+        run: |
+          # Create a wrapper that uses lld instead of GNU ld
+          # This avoids the ISA extension compatibility issues with old GCC binutils
+          cat > /tmp/riscv64-linux-musl-ld << 'WRAPPER'
+          #!/bin/bash
+          # Wrapper to use ld.lld instead of GNU ld for RISC-V linking
+          # Converts GNU ld args to lld-compatible args
+          exec ld.lld "$@"
+          WRAPPER
+          chmod +x /tmp/riscv64-linux-musl-ld
+          sudo apt-get update
+          sudo apt-get install -y lld
+
       - name: Build for RISC-V (musl)
         env:
           CC_riscv64gc_unknown_linux_musl: riscv64-unknown-linux-musl-gcc
@@ -94,6 +108,21 @@ jobs:
           RUSTFLAGS: "-C target-feature=-v"
         run: |
           export PATH="/opt/riscv-musl/gcc/riscv64-linux-musl-x86_64/bin:$PATH"
+
+          # Replace the binutils ld with our lld wrapper
+          BINUTILS_DIR="/opt/riscv-musl/gcc/riscv64-linux-musl-x86_64/riscv64-unknown-linux-musl/bin"
+          if [ -f "$BINUTILS_DIR/ld" ]; then
+            sudo mv "$BINUTILS_DIR/ld" "$BINUTILS_DIR/ld.bak"
+            sudo cp /tmp/riscv64-linux-musl-ld "$BINUTILS_DIR/ld"
+          fi
+
+          # Also check the main bin directory
+          MAIN_BIN="/opt/riscv-musl/gcc/riscv64-linux-musl-x86_64/bin"
+          if [ -f "$MAIN_BIN/riscv64-unknown-linux-musl-ld" ]; then
+            sudo mv "$MAIN_BIN/riscv64-unknown-linux-musl-ld" "$MAIN_BIN/riscv64-unknown-linux-musl-ld.bak"
+            sudo cp /tmp/riscv64-linux-musl-ld "$MAIN_BIN/riscv64-unknown-linux-musl-ld"
+          fi
+
           cargo build --workspace --release --target riscv64gc-unknown-linux-musl
 
       - name: Verify binary
