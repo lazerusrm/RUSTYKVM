@@ -111,6 +111,61 @@ jobs:
           path: target/riscv64gc-unknown-linux-musl/release/nanokvm-server
           if-no-files-found: error
 
+  build-firmware:
+    name: Build Firmware Package
+    runs-on: ubuntu-latest
+    needs: build-riscv
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: nanokvm-binary
+          path: binary/
+
+      - name: Clone NanoKVM sources for libraries
+        run: |
+          git clone --depth=1 https://github.com/sipeed/NanoKVM ../NanoKVM
+
+      - name: Bootstrap deployment directory
+        run: |
+          chmod +x bootstrap-deploy.sh
+          NANOKVM_PATH=../NanoKVM ./bootstrap-deploy.sh
+
+      - name: Package firmware
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=${VERSION:-dev}
+
+          # Copy binary
+          mkdir -p deploy/kvmapp/server
+          cp binary/nanokvm-server deploy/kvmapp/server/nanokvm-rs-server
+          chmod +x deploy/kvmapp/server/nanokvm-rs-server
+
+          # Create firmware ZIP
+          cd deploy
+          zip -r ../nanokvm-rs-firmware-${VERSION}.zip kvmapp/
+          cd ..
+
+          # Create SHA256 checksum
+          sha256sum nanokvm-rs-firmware-${VERSION}.zip > nanokvm-rs-firmware-${VERSION}.zip.sha256
+
+          echo "=== Firmware package created ==="
+          ls -lh nanokvm-rs-firmware-*.zip*
+          echo ""
+          echo "Contents:"
+          unzip -l nanokvm-rs-firmware-${VERSION}.zip | tail -30
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanokvm-firmware
+          path: |
+            nanokvm-rs-firmware-*.zip
+            nanokvm-rs-firmware-*.zip.sha256
+          if-no-files-found: error
+
   build-image:
     name: Build SD Card Image
     runs-on: ubuntu-latest
@@ -782,7 +837,7 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-riscv, build-image]
+    needs: [build-riscv, build-image, build-firmware]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -801,14 +856,20 @@ jobs:
           name: nanokvm-image
           path: image/
 
+      - name: Download firmware package
+        uses: actions/download-artifact@v4
+        with:
+          name: nanokvm-firmware
+          path: firmware/
+
       - name: Create upgrade package
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
           mkdir -p package
           cp binary/nanokvm-server package/
-          cp -r web package/
-          cp -r dl_lib package/
-          cp scripts/install.sh package/
+          cp -r web package/ 2>/dev/null || true
+          cp -r dl_lib package/ 2>/dev/null || true
+          cp scripts/install.sh package/ 2>/dev/null || echo '#!/bin/sh' > package/install.sh
           chmod +x package/install.sh package/nanokvm-server
           cd package
           tar -czvf ../nanokvm-rs-${VERSION}-upgrade.tar.gz .
@@ -821,6 +882,8 @@ jobs:
           files: |
             image/nanokvm-rs-*.img.xz
             image/nanokvm-rs-*.img.xz.sha256
+            firmware/nanokvm-rs-firmware-*.zip
+            firmware/nanokvm-rs-firmware-*.zip.sha256
             nanokvm-rs-*-upgrade.tar.gz
             nanokvm-rs-*-upgrade.tar.gz.sha256
           generate_release_notes: true

@@ -7,7 +7,12 @@ target = "riscv64gc-unknown-linux-musl"
 linker = "riscv64-unknown-linux-musl-gcc"
 ar = "riscv64-unknown-linux-musl-ar"
 # Disable vector instructions - C906 uses RVV 0.7 (draft), not RVV 1.0
-rustflags = ["-C", "target-feature=-v"]
+# Set rpath for runtime library loading (./dl_lib relative to binary location)
+rustflags = [
+    "-C", "target-feature=-v",
+    "-C", "link-arg=-Wl,-rpath,$ORIGIN/dl_lib",
+    "-C", "link-arg=-Wl,-rpath,/kvmapp/server/dl_lib",
+]
 
 [profile.release]
 opt-level = 2

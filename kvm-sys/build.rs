@@ -69,7 +69,15 @@ unsigned char kvmv_hdmi_control(unsigned char en) { (void)en; return 0; }
     } else {
         // Native build on device - link against the real library dynamically
         println!("cargo:rustc-link-lib=dylib=kvm");
+
+        // Search paths for libkvm.so at runtime:
+        // - /kvmapp/server/dl_lib  (new deployment structure)
+        // - /kvmapp/dl_lib         (legacy structure)
+        // - /tmp/server/dl_lib     (tmpfs execution location)
+        // - Standard system paths
+        println!("cargo:rustc-link-search=native=/kvmapp/server/dl_lib");
         println!("cargo:rustc-link-search=native=/kvmapp/dl_lib");
+        println!("cargo:rustc-link-search=native=/tmp/server/dl_lib");
         println!("cargo:rustc-link-search=native=/usr/lib");
         println!("cargo:rustc-link-search=native=/lib");
 

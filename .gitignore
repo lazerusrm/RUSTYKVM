@@ -13,7 +13,18 @@ release/
 *.swp
 *.swo
 
-# Documentation (only allow README files)
+# Documentation (only allow README and DEPLOYMENT files)
 *.md
 !README.md
 !*/README.md
+!DEPLOYMENT.md
+
+# Deployment artifacts
+# Keep deploy/ structure but ignore binaries and large files
+deploy/kvmapp/server/nanokvm-rs-server
+deploy/kvmapp/server/dl_lib/*.so
+deploy/kvmapp/system/ko/*.ko
+*.zip
+
+# Logs
+*.log
