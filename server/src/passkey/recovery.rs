@@ -61,6 +61,7 @@ pub async fn save_recovery_codes(storage: &RecoveryStorage) -> std::io::Result<(
 pub async fn load_recovery_codes() -> std::io::Result<RecoveryStorage> {
     #[cfg(target_os = "linux")]
     {
+        use std::os::unix::fs::PermissionsExt;
         if let Ok(metadata) = tokio::fs::metadata(RECOVERY_CODES_FILE).await {
             if let Ok(perms) = metadata.permissions().mode() {
                 if perms & 0o777 != 0o600 {

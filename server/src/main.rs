@@ -40,7 +40,7 @@ use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 #[cfg(target_os = "linux")]
 use crate::webrtc::screen::{stop_frame_detect_handler, update_frame_detect_handler};
