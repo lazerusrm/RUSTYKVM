@@ -387,7 +387,7 @@ async fn main() {
             )
             .route("/vm/autostart", get(get_autostart_handler))
             .route(
-                "/vm/autostart/:name",
+                "/vm/autostart/{name}",
                 get(get_autostart_content_handler)
                     .post(upload_autostart_handler)
                     .delete(delete_autostart_handler),
@@ -413,7 +413,7 @@ async fn main() {
     let api_routes = api_routes
         .route("/webrtc/whep", post(whep_post_handler))
         .route(
-            "/webrtc/whep/:id",
+            "/webrtc/whep/{id}",
             get(whep_get_handler)
                 .patch(whep_patch_handler)
                 .delete(whep_delete_handler),
