@@ -461,17 +461,15 @@ async fn load_passkeys() -> std::io::Result<crate::passkey::models::PasskeyStora
     {
         use std::os::unix::fs::PermissionsExt;
         if let Ok(metadata) = tokio::fs::metadata(PASSKEYS_FILE).await {
-            if let Ok(perms) = metadata.permissions().mode() {
-                if perms & 0o777 != 0o600 {
-                    warn!("Passkeys file has incorrect permissions: {:o}", perms);
-                }
+            let perms = metadata.permissions().mode();
+            if perms & 0o777 != 0o600 {
+                warn!("Passkeys file has incorrect permissions: {:o}", perms);
             }
         }
     }
 
     match tokio::fs::read_to_string(PASSKEYS_FILE).await {
-        Ok(content) => serde_json::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+        Ok(content) => serde_json::from_str(&content).map_err(std::io::Error::other),
         Err(e) => Err(e),
     }
 }

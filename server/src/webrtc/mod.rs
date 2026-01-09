@@ -24,6 +24,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum FrameType {
     H264,
     H265,

@@ -591,7 +591,7 @@ impl PeerConnectionManager {
             .map_err(|e| Error::Transport(e.to_string()))?;
         let receivers = peer_connection.get_receivers().await;
         let mut playout_delay_id: Option<u8> = None;
-        if let Some(receiver) = receivers.get(0) {
+        if let Some(receiver) = receivers.first() {
             let params = receiver.get_parameters().await;
             playout_delay_id = params
                 .header_extensions
@@ -630,7 +630,7 @@ impl PeerConnectionManager {
         self.source_connections
             .write()
             .entry(source_id.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(connection_id.clone());
         Ok((
             sdp_answer,
@@ -1003,7 +1003,7 @@ impl PeerConnectionManager {
         self.source_connections
             .write()
             .entry(source_id.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(connection_id.clone());
         Ok((connection_id, local_desc))
     }

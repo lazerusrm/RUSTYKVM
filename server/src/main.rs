@@ -40,6 +40,7 @@ use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
+#[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 
 #[cfg(target_os = "linux")]

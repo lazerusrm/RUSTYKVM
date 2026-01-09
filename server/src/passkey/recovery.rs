@@ -63,17 +63,15 @@ pub async fn load_recovery_codes() -> std::io::Result<RecoveryStorage> {
     {
         use std::os::unix::fs::PermissionsExt;
         if let Ok(metadata) = tokio::fs::metadata(RECOVERY_CODES_FILE).await {
-            if let Ok(perms) = metadata.permissions().mode() {
-                if perms & 0o777 != 0o600 {
-                    tracing::warn!("Recovery codes file has incorrect permissions: {:o}", perms);
-                }
+            let perms = metadata.permissions().mode();
+            if perms & 0o777 != 0o600 {
+                tracing::warn!("Recovery codes file has incorrect permissions: {:o}", perms);
             }
         }
     }
 
     match fs::read_to_string(RECOVERY_CODES_FILE).await {
-        Ok(content) => serde_json::from_str(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+        Ok(content) => serde_json::from_str(&content).map_err(std::io::Error::other),
         Err(e) => Err(e),
     }
 }

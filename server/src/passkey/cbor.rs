@@ -1,5 +1,5 @@
-/// CBOR parsing utilities for WebAuthn attestation and assertion data.
-/// These functions implement minimal CBOR decoding needed for passkey operations.
+//! CBOR parsing utilities for WebAuthn attestation and assertion data.
+//! These functions implement minimal CBOR decoding needed for passkey operations.
 
 /// Read a CBOR integer value from the data stream.
 /// Supports unsigned integers up to 64 bits.

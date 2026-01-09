@@ -537,9 +537,10 @@ pub async fn set_jiggler_handler(
 }
 
 pub async fn terminal_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_terminal_socket(socket))
+    ws.on_upgrade(handle_terminal_socket)
 }
 
+#[allow(unused_mut)]
 async fn handle_terminal_socket(mut socket: WebSocket) {
     #[cfg(target_os = "linux")]
     {
@@ -566,7 +567,7 @@ async fn handle_terminal_socket(mut socket: WebSocket) {
             }
         };
 
-        let mut reader = match pair.master.try_clone_reader() {
+        let reader = match pair.master.try_clone_reader() {
             Ok(r) => r,
             Err(e) => {
                 error!("Failed to clone PTY reader: {}", e);
