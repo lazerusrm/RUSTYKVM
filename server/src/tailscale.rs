@@ -13,28 +13,45 @@ const TAILSCALED_PATH: &str = "/usr/sbin/tailscaled";
 const ORIGINAL_URL: &str = "https://pkgs.tailscale.com/stable/tailscale_latest_riscv64.tgz";
 const WORKSPACE: &str = "/root/.tailscale";
 
-#[derive(Serialize)]
-pub struct TsStatus {
+use serde::Deserialize;
+
+/// Raw tailscale status JSON structure (for deserialization)
+#[derive(Deserialize)]
+struct TsStatusRaw {
     #[serde(rename = "BackendState")]
-    pub backend_state: String,
+    backend_state: String,
     #[serde(rename = "Self")]
-    pub self_node: TsSelfNode,
+    self_node: Option<TsSelfNodeRaw>,
     #[serde(rename = "CurrentTailnet")]
-    pub current_tailnet: TsTailnet,
+    current_tailnet: Option<TsTailnetRaw>,
 }
 
-#[derive(Serialize)]
-pub struct TsSelfNode {
+#[derive(Deserialize)]
+struct TsSelfNodeRaw {
     #[serde(rename = "HostName")]
-    pub host_name: String,
+    host_name: Option<String>,
     #[serde(rename = "TailscaleIPs")]
-    pub tailscale_ips: Vec<String>,
+    tailscale_ips: Option<Vec<String>>,
+    #[serde(rename = "Online")]
+    online: Option<bool>,
 }
 
-#[derive(Serialize)]
-pub struct TsTailnet {
+#[derive(Deserialize)]
+struct TsTailnetRaw {
     #[serde(rename = "Name")]
-    pub name: String,
+    name: Option<String>,
+}
+
+/// Simplified status response
+#[derive(Serialize)]
+pub struct TsStatusResponse {
+    pub installed: bool,
+    pub running: bool,
+    pub connected: bool,
+    pub backend_state: String,
+    pub hostname: String,
+    pub tailnet_name: String,
+    pub ips: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -62,20 +79,82 @@ pub async fn tailscale_stop_handler() -> impl IntoResponse {
 }
 
 pub async fn tailscale_status_handler() -> impl IntoResponse {
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg("tailscale status --json")
+    // Check if tailscale is installed
+    let installed = tokio::fs::metadata(TAILSCALE_PATH).await.is_ok();
+    if !installed {
+        return Json(TsStatusResponse {
+            installed: false,
+            running: false,
+            connected: false,
+            backend_state: String::new(),
+            hostname: String::new(),
+            tailnet_name: String::new(),
+            ips: Vec::new(),
+        });
+    }
+
+    let output = Command::new("tailscale")
+        .args(["status", "--json"])
         .output()
         .await;
+
     match output {
-        Ok(out) => {
-            let s = String::from_utf8_lossy(&out.stdout);
-            if let Some(idx) = s.find('{') {
-                return (StatusCode::OK, s[idx..].to_string()).into_response();
+        Ok(out) if out.status.success() => {
+            let json_str = String::from_utf8_lossy(&out.stdout);
+            match serde_json::from_str::<TsStatusRaw>(&json_str) {
+                Ok(status) => {
+                    let self_node = status.self_node.as_ref();
+                    let tailnet = status.current_tailnet.as_ref();
+
+                    Json(TsStatusResponse {
+                        installed: true,
+                        running: true,
+                        connected: self_node.and_then(|n| n.online).unwrap_or(false),
+                        backend_state: status.backend_state,
+                        hostname: self_node
+                            .and_then(|n| n.host_name.clone())
+                            .unwrap_or_default(),
+                        tailnet_name: tailnet.and_then(|t| t.name.clone()).unwrap_or_default(),
+                        ips: self_node
+                            .and_then(|n| n.tailscale_ips.clone())
+                            .unwrap_or_default(),
+                    })
+                }
+                Err(e) => {
+                    error!("Failed to parse tailscale status: {}", e);
+                    Json(TsStatusResponse {
+                        installed: true,
+                        running: true,
+                        connected: false,
+                        backend_state: "ParseError".to_string(),
+                        hostname: String::new(),
+                        tailnet_name: String::new(),
+                        ips: Vec::new(),
+                    })
+                }
             }
-            (StatusCode::INTERNAL_SERVER_ERROR, "Invalid JSON").into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(_) => {
+            // Command ran but tailscale returned an error (not running?)
+            Json(TsStatusResponse {
+                installed: true,
+                running: false,
+                connected: false,
+                backend_state: "Stopped".to_string(),
+                hostname: String::new(),
+                tailnet_name: String::new(),
+                ips: Vec::new(),
+            })
+        }
+        Err(_) => Json(TsStatusResponse {
+            installed: true,
+            running: false,
+            connected: false,
+            backend_state: "Error".to_string(),
+            hostname: String::new(),
+            tailnet_name: String::new(),
+            ips: Vec::new(),
+        }),
     }
 }
 

@@ -21,8 +21,8 @@ use crate::passkey::{
     },
     qr::generate_qr_code_simple,
     recovery::{
-        format_recovery_codes_for_display, generate_recovery_codes, save_recovery_codes,
-        validate_and_consume_code,
+        format_recovery_codes_for_display, generate_recovery_codes, get_remaining_codes_count,
+        save_recovery_codes, validate_and_consume_code,
     },
     PasskeyState,
 };
@@ -88,6 +88,29 @@ fn extract_public_key_from_attestation(attestation_cbor: &[u8]) -> Option<CoseKe
 #[derive(Serialize, Deserialize)]
 pub struct PasskeySetupRequest {
     pub device_name: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct PasskeyStatusResponse {
+    pub configured: bool,
+    pub credentials_count: u32,
+    pub remaining_recovery_codes: u32,
+    pub capabilities: Capabilities,
+}
+
+/// Get current passkey authentication status
+pub async fn passkey_status_handler() -> impl IntoResponse {
+    let caps = detect_capabilities().await;
+    let passkeys = load_passkeys().await.ok();
+    let credentials_count = passkeys.map(|p| p.credentials.len() as u32).unwrap_or(0);
+    let remaining_recovery_codes = get_remaining_codes_count().await;
+
+    Json(PasskeyStatusResponse {
+        configured: credentials_count > 0,
+        credentials_count,
+        remaining_recovery_codes,
+        capabilities: caps,
+    })
 }
 
 async fn check_passkey_exists() -> bool {
@@ -211,9 +234,7 @@ async fn get_funnel_url() -> Option<String> {
     if let Some(status) = output {
         if let Some(start) = status.find("https://") {
             let url_part = &status[start..];
-            let end = url_part
-                .find(|c| c == '\n' || c == ' ')
-                .unwrap_or(url_part.len());
+            let end = url_part.find(['\n', ' ']).unwrap_or(url_part.len());
             Some(url_part[..end].to_string())
         } else {
             None

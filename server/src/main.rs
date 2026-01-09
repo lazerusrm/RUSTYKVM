@@ -53,10 +53,11 @@ use crate::vm::{
     get_autostart_content_handler, get_autostart_handler, get_gpio_handler, get_hardware_handler,
     get_hdmi_state_handler, get_hostname_handler, get_info_handler, get_jiggler_handler,
     get_mdns_handler, get_oled_handler, get_scripts_handler, get_ssh_handler, get_swap_handler,
-    get_virtual_device_handler, get_web_title_handler, reset_hdmi_handler, run_script_handler,
-    set_gpio_handler, set_hostname_handler, set_jiggler_handler, set_oled_handler,
-    set_screen_handler, set_swap_handler, set_tls_handler, set_web_title_handler, terminal_handler,
-    update_virtual_device_handler, upload_autostart_handler, upload_script_handler,
+    get_virtual_device_handler, get_web_title_handler, reboot_handler, reset_hdmi_handler,
+    run_script_handler, set_gpio_handler, set_hostname_handler, set_jiggler_handler,
+    set_oled_handler, set_screen_handler, set_swap_handler, set_tls_handler, set_web_title_handler,
+    terminal_handler, update_virtual_device_handler, upload_autostart_handler,
+    upload_script_handler,
 };
 
 use crate::application::{
@@ -78,7 +79,7 @@ use crate::network::{
 };
 use crate::passkey::handlers::{
     enroll_complete_handler, login_challenge_handler, login_verify_handler, passkey_setup_handler,
-    qr_code_handler, recover_handler, recovery_download_handler,
+    passkey_status_handler, qr_code_handler, recover_handler, recovery_download_handler,
 };
 use crate::storage::{
     delete_image_handler, get_cdrom_handler, get_images_handler, get_mounted_image_handler,
@@ -130,6 +131,7 @@ pub struct AppState {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[allow(dead_code)] // Fields for future audio streaming support
 pub struct AppState {
     config: Arc<Config>,
     screen_config: crate::webrtc::screen::SharedScreenConfig,
@@ -396,6 +398,7 @@ async fn main() {
             .route("/vm/hdmi/enable", post(enable_hdmi_handler))
             .route("/vm/hdmi/disable", post(disable_hdmi_handler))
             .route("/vm/screen", post(set_screen_handler))
+            .route("/vm/reboot", post(reboot_handler))
             .route("/tailscale/install", post(tailscale_install_handler))
             .route("/tailscale/uninstall", post(tailscale_uninstall_handler))
             .route("/tailscale/start", post(tailscale_start_handler))
@@ -432,6 +435,7 @@ async fn main() {
         )
         .route("/api/auth/logout", post(logout_handler))
         // Passkey authentication routes (unauthenticated)
+        .route("/api/passkey/status", get(passkey_status_handler))
         .route("/api/passkey/setup", post(passkey_setup_handler))
         .route("/api/passkey/enroll", post(enroll_complete_handler))
         .route(
@@ -609,6 +613,7 @@ fn init_logging(config: &Config) -> Option<tracing_appender::non_blocking::Worke
     }
 }
 
+#[allow(dead_code)] // TODO: Call from video capture task for improved latency
 fn set_realtime_priority() {
     #[cfg(target_os = "linux")]
     unsafe {

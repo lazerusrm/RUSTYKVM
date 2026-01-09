@@ -3,9 +3,11 @@
 use crate::passkey::models::{RecoveryCode, RecoveryStorage, RECOVERY_CODES_FILE};
 use chrono::Utc;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
+use tokio::sync::OnceCell;
 
 const RATE_LIMIT_WINDOW_SECONDS: u64 = 900;
 const MAX_ATTEMPTS_PER_WINDOW: u8 = 5;
@@ -13,6 +15,37 @@ const RATE_LIMIT_FILE: &str = "/etc/kvm/recovery_rate_limit";
 
 static LAST_ATTEMPT_TIME: AtomicU64 = AtomicU64::new(0);
 static ATTEMPT_COUNT: AtomicU8 = AtomicU8::new(0);
+static RATE_LIMIT_LOADED: OnceCell<()> = OnceCell::const_new();
+
+#[derive(Serialize, Deserialize)]
+struct RateLimitState {
+    last_attempt: u64,
+    attempts: u8,
+}
+
+async fn load_rate_limit_state() {
+    // Only load once
+    let _ = RATE_LIMIT_LOADED
+        .get_or_init(|| async {
+            if let Ok(content) = fs::read_to_string(RATE_LIMIT_FILE).await {
+                if let Ok(state) = serde_json::from_str::<RateLimitState>(&content) {
+                    LAST_ATTEMPT_TIME.store(state.last_attempt, Ordering::SeqCst);
+                    ATTEMPT_COUNT.store(state.attempts, Ordering::SeqCst);
+                }
+            }
+        })
+        .await;
+}
+
+async fn save_rate_limit_state() {
+    let state = RateLimitState {
+        last_attempt: LAST_ATTEMPT_TIME.load(Ordering::SeqCst),
+        attempts: ATTEMPT_COUNT.load(Ordering::SeqCst),
+    };
+    if let Ok(json) = serde_json::to_string(&state) {
+        let _ = fs::write(RATE_LIMIT_FILE, json).await;
+    }
+}
 
 pub fn generate_recovery_code() -> String {
     const CHARSET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -94,7 +127,10 @@ pub fn format_recovery_codes_for_display(storage: &RecoveryStorage) -> Vec<Strin
         .collect()
 }
 
-fn check_rate_limit() -> bool {
+async fn check_rate_limit() -> bool {
+    // Load persisted state on first call
+    load_rate_limit_state().await;
+
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
@@ -105,11 +141,13 @@ fn check_rate_limit() -> bool {
     if now - last_attempt > RATE_LIMIT_WINDOW_SECONDS {
         LAST_ATTEMPT_TIME.store(now, Ordering::SeqCst);
         ATTEMPT_COUNT.store(1, Ordering::SeqCst);
+        save_rate_limit_state().await;
         return true;
     }
 
     if attempts < MAX_ATTEMPTS_PER_WINDOW {
         ATTEMPT_COUNT.store(attempts + 1, Ordering::SeqCst);
+        save_rate_limit_state().await;
         return true;
     }
 
@@ -117,7 +155,7 @@ fn check_rate_limit() -> bool {
 }
 
 pub async fn validate_and_consume_code(input_code: &str) -> Result<(bool, u32), String> {
-    if !check_rate_limit() {
+    if !check_rate_limit().await {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)

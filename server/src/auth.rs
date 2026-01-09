@@ -27,7 +27,6 @@ use tracing::error;
 
 const COOKIE_NAME: &str = "nano-kvm-token";
 const PWD_FILE: &str = "/etc/kvm/pwd";
-const PWD_HISTORY_FILE: &str = "/etc/kvm/pwd_history";
 const AUDIT_LOG_FILE: &str = "/var/log/nanokvm_auth.log";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -59,17 +58,6 @@ pub struct Account {
     pub failed_attempts: u8,
     pub locked_until: Option<u64>,
     pub must_change_password: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PasswordHistory {
-    pub entries: Vec<PasswordEntry>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PasswordEntry {
-    pub hash: String,
-    pub timestamp: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
