@@ -5,9 +5,7 @@ pub mod models;
 pub mod qr;
 pub mod recovery;
 
-use std::sync::Arc;
 use tokio::sync::Mutex;
-use crate::AppState;
 
 pub struct PasskeyState {
     pub pending_challenge: Mutex<Option<PendingChallenge>>,
@@ -27,6 +25,12 @@ pub struct PendingChallenge {
 
 const CHALLENGE_TTL_MINUTES: i64 = 5;
 
+impl PendingChallenge {
+    pub fn is_expired(&self) -> bool {
+        chrono::Utc::now() >= self.expires_at
+    }
+}
+
 impl PasskeyState {
     pub fn new() -> Self {
         Self {
@@ -38,7 +42,14 @@ impl PasskeyState {
         uuid::Uuid::new_v4().to_string()
     }
 
-    pub fn new_enrollment_challenge(&self, challenge_id: String, challenge: String, user_id: Vec<u8>, rp_id: String, credential_id: Option<String>) -> PendingChallenge {
+    pub fn new_enrollment_challenge(
+        &self,
+        challenge_id: String,
+        challenge: String,
+        user_id: Vec<u8>,
+        rp_id: String,
+        credential_id: Option<String>,
+    ) -> PendingChallenge {
         let now = chrono::Utc::now();
         PendingChallenge {
             challenge_id,
@@ -52,7 +63,13 @@ impl PasskeyState {
         }
     }
 
-    pub fn new_login_challenge(&self, challenge_id: String, challenge: String, rp_id: String, credential_id: Option<String>) -> PendingChallenge {
+    pub fn new_login_challenge(
+        &self,
+        challenge_id: String,
+        challenge: String,
+        rp_id: String,
+        credential_id: Option<String>,
+    ) -> PendingChallenge {
         let now = chrono::Utc::now();
         PendingChallenge {
             challenge_id,
@@ -65,22 +82,10 @@ impl PasskeyState {
             credential_id,
         }
     }
-
-    pub fn is_expired(&self) -> bool {
-        let now = chrono::Utc::now();
-        match &*self.pending_challenge.lock().await {
-            Some(c) => now >= c.expires_at,
-            None => true,
-        }
-    }
 }
 
 impl Default for PasskeyState {
     fn default() -> Self {
         Self::new()
     }
-}
-
-pub async fn get_passkey_state(state: &Arc<AppState>) -> &PasskeyState {
-    &state.passkey_state
 }

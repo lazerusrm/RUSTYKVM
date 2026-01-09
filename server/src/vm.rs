@@ -7,7 +7,6 @@ use axum::{
     },
     response::IntoResponse,
 };
-use futures::SinkExt;
 #[cfg(target_os = "linux")]
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};

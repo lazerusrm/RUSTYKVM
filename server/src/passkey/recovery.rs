@@ -1,9 +1,9 @@
-use tokio::fs;
-use rand::Rng;
+use crate::passkey::models::{RecoveryCode, RecoveryStorage, RECOVERY_CODES_FILE};
 use chrono::Utc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
-use crate::passkey::models::{RecoveryStorage, RecoveryCode, RECOVERY_CODES_FILE};
+use rand::Rng;
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::fs;
 
 const RATE_LIMIT_WINDOW_SECONDS: u64 = 900;
 const MAX_ATTEMPTS_PER_WINDOW: u8 = 5;
@@ -71,46 +71,9 @@ pub async fn load_recovery_codes() -> std::io::Result<RecoveryStorage> {
     }
 
     match fs::read_to_string(RECOVERY_CODES_FILE).await {
-        Ok(content) => {
-            serde_json::from_str(&content).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-        }
+        Ok(content) => serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
         Err(e) => Err(e),
-    }
-}
-
-pub async fn validate_and_consume_code(input_code: &str) -> Result<(bool, u32), String> {
-    let normalized_input = input_code.trim().to_uppercase().replace("-", "");
-    
-    let mut storage = load_recovery_codes().await.map_err(|e| e.to_string())?;
-    
-    let mut found = false;
-    let mut remaining = 0usize;
-    
-    for code in &storage.codes {
-        if code.used {
-            remaining += 1;
-        } else {
-            let normalized = code.code.replace("-", "");
-            if normalized == normalized_input {
-                found = true;
-            } else {
-                remaining += 1;
-            }
-        }
-    }
-    
-    if found {
-        for code in &mut storage.codes {
-            let normalized = code.code.replace("-", "");
-            if normalized == normalized_input && !code.used {
-                code.used = true;
-                break;
-            }
-        }
-        save_recovery_codes(&storage).await.map_err(|e| e.to_string())?;
-        Ok((true, remaining as u32))
-    } else {
-        Ok((false, remaining as u32))
     }
 }
 
@@ -122,7 +85,8 @@ pub async fn get_remaining_codes_count() -> u32 {
 }
 
 pub fn format_recovery_codes_for_display(storage: &RecoveryStorage) -> Vec<String> {
-    storage.codes
+    storage
+        .codes
         .iter()
         .filter(|c| !c.used)
         .map(|c| c.code.clone())
@@ -130,7 +94,8 @@ pub fn format_recovery_codes_for_display(storage: &RecoveryStorage) -> Vec<Strin
 }
 
 fn check_rate_limit() -> bool {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_secs();
     let last_attempt = LAST_ATTEMPT_TIME.load(Ordering::SeqCst);
@@ -152,12 +117,16 @@ fn check_rate_limit() -> bool {
 
 pub async fn validate_and_consume_code(input_code: &str) -> Result<(bool, u32), String> {
     if !check_rate_limit() {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_secs();
         let last_attempt = LAST_ATTEMPT_TIME.load(Ordering::SeqCst);
         let wait_time = RATE_LIMIT_WINDOW_SECONDS - (now - last_attempt);
-        return Err(format!("Too many attempts. Please wait {} seconds.", wait_time));
+        return Err(format!(
+            "Too many attempts. Please wait {} seconds.",
+            wait_time
+        ));
     }
 
     let normalized_input = input_code.trim().to_uppercase().replace("-", "");
@@ -188,7 +157,9 @@ pub async fn validate_and_consume_code(input_code: &str) -> Result<(bool, u32), 
                 break;
             }
         }
-        save_recovery_codes(&storage).await.map_err(|e| e.to_string())?;
+        save_recovery_codes(&storage)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok((true, remaining as u32))
     } else {
         Ok((false, remaining as u32))

@@ -4,6 +4,7 @@ mod config;
 mod download;
 mod hid;
 mod network;
+mod passkey;
 mod storage;
 mod storage_health;
 mod tailscale;
@@ -39,7 +40,7 @@ use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 #[cfg(target_os = "linux")]
 use crate::webrtc::screen::{stop_frame_detect_handler, update_frame_detect_handler};
@@ -73,6 +74,10 @@ use crate::hid::{
 use crate::network::{
     connect_wifi_handler, delete_wol_mac_handler, disconnect_wifi_handler, get_wifi_handler,
     get_wol_macs_handler, set_wol_name_handler, wol_handler,
+};
+use crate::passkey::handlers::{
+    enroll_complete_handler, login_challenge_handler, login_verify_handler, passkey_setup_handler,
+    qr_code_handler, recover_handler, recovery_download_handler,
 };
 use crate::storage::{
     delete_image_handler, get_cdrom_handler, get_images_handler, get_mounted_image_handler,
@@ -119,6 +124,7 @@ pub struct AppState {
     jiggler: Arc<::vm::jiggler::MouseJiggler>,
     kvm: Arc<::kvm::Kvm>,
     health_state: Arc<HealthState>,
+    passkey_state: Arc<crate::passkey::PasskeyState>,
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -132,6 +138,7 @@ pub struct AppState {
     webrtc: Arc<PeerConnectionManager>,
     whep: Arc<WhepEndpoint>,
     health_state: Arc<HealthState>,
+    passkey_state: Arc<crate::passkey::PasskeyState>,
 }
 
 #[tokio::main]
@@ -193,6 +200,8 @@ async fn main() {
     );
     let whep_endpoint = Arc::new(WhepEndpoint::new(webrtc_manager.clone()));
 
+    let passkey_state = Arc::new(crate::passkey::PasskeyState::new());
+
     #[cfg(target_os = "linux")]
     let shared_state = Arc::new(AppState {
         config: config.clone(),
@@ -207,6 +216,7 @@ async fn main() {
         jiggler: mouse_jiggler.clone(),
         kvm: kvm_handle.clone(),
         health_state: Arc::new(HealthState::default()),
+        passkey_state: passkey_state.clone(),
     });
 
     #[cfg(not(target_os = "linux"))]
@@ -220,6 +230,7 @@ async fn main() {
         webrtc: webrtc_manager.clone(),
         whep: whep_endpoint.clone(),
         health_state: Arc::new(HealthState::default()),
+        passkey_state,
     });
 
     // Initialize storage health check on boot (non-blocking)
@@ -266,6 +277,7 @@ async fn main() {
     let web_path = "web";
 
     // 4. Build Router
+    #[allow(unused_mut)] // mut needed for cfg(target_os = "linux") blocks
     let mut api_routes = Router::new()
         .route("/application/version", get(get_version_handler))
         .route("/application/update", post(update_handler))
@@ -417,6 +429,20 @@ async fn main() {
             get(is_password_updated_handler).post(change_password_handler),
         )
         .route("/api/auth/logout", post(logout_handler))
+        // Passkey authentication routes (unauthenticated)
+        .route("/api/passkey/setup", post(passkey_setup_handler))
+        .route("/api/passkey/enroll", post(enroll_complete_handler))
+        .route(
+            "/api/passkey/login/challenge",
+            post(login_challenge_handler),
+        )
+        .route("/api/passkey/login/verify", post(login_verify_handler))
+        .route("/api/passkey/recover", post(recover_handler))
+        .route(
+            "/api/passkey/recovery/download",
+            get(recovery_download_handler),
+        )
+        .route("/api/passkey/qr", get(qr_code_handler))
         .nest("/api", api_routes)
         .nest_service("/", ServeDir::new(web_path))
         .layer(CompressionLayer::new())

@@ -4,7 +4,9 @@ use axum::{
     response::IntoResponse,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::sync::Arc;
 use tokio::process::Command;
 use tracing::{error, info, warn};
@@ -24,8 +26,18 @@ use crate::passkey::{
     },
     PasskeyState,
 };
-use crate::system::capabilities::Capabilities;
 use crate::AppState;
+
+/// Capabilities for passkey authentication
+#[derive(Debug, Clone, Serialize)]
+pub struct Capabilities {
+    pub tailscale_installed: bool,
+    pub tailscale_connected: bool,
+    pub tailscale_funnel_active: bool,
+    pub funnel_url: Option<String>,
+    pub passkey_configured: bool,
+    pub passkey_reason: Option<String>,
+}
 
 fn extract_public_key_from_attestation(attestation_cbor: &[u8]) -> Option<CoseKey> {
     if attestation_cbor.len() < 37 || attestation_cbor[0] != 0xa3 {
@@ -105,7 +117,9 @@ async fn wait_for_funnel_ready(max_seconds: u64) -> Option<String> {
 
         if let Some(s) = status {
             if let Some(start) = s.find("https://") {
-                let end = s[start..].find(|c| c == '\n' || c == ' ').unwrap_or(s[start..].len());
+                let end = s[start..]
+                    .find(|c| c == '\n' || c == ' ')
+                    .unwrap_or(s[start..].len());
                 let url = &s[start..start + end];
                 if url.contains(".ts.net") {
                     return Some(url.to_string());
@@ -166,7 +180,8 @@ async fn check_tailscale_connected() -> bool {
         .and_then(|o| String::from_utf8(o.stdout).ok());
 
     if let Some(json) = output {
-        json.contains("\"Online\": true") || (json.contains("\"Self\":{") && json.contains("\"Online\":true"))
+        json.contains("\"Online\": true")
+            || (json.contains("\"Self\":{") && json.contains("\"Online\":true"))
     } else {
         false
     }
@@ -198,7 +213,9 @@ async fn get_funnel_url() -> Option<String> {
     if let Some(status) = output {
         if let Some(start) = status.find("https://") {
             let url_part = &status[start..];
-            let end = url_part.find(|c| c == '\n' || c == ' ').unwrap_or(url_part.len());
+            let end = url_part
+                .find(|c| c == '\n' || c == ' ')
+                .unwrap_or(url_part.len());
             Some(url_part[..end].to_string())
         } else {
             None
@@ -255,7 +272,7 @@ pub async fn passkey_setup_handler(
         }
 
         match wait_for_funnel_ready(30).await {
-            Some(url) => url,
+            Some(url) => Some(url),
             None => {
                 error!("Failed to get funnel URL after enabling");
                 return Json(SetupResponse {
@@ -269,6 +286,9 @@ pub async fn passkey_setup_handler(
         }
     };
 
+    // rp_id should always be Some at this point (None cases return early above)
+    let funnel_url = rp_id.unwrap_or_default();
+
     let challenge_id = PasskeyState::generate_challenge_id();
     let challenge = generate_random_challenge();
     let user_id = generate_user_id();
@@ -279,12 +299,12 @@ pub async fn passkey_setup_handler(
             challenge_id.clone(),
             challenge.clone(),
             user_id.clone(),
-            rp_id.clone(),
+            funnel_url.clone(),
             None,
         ));
     }
 
-    let enrollment_url = format!("{}/passkey/enroll/{}", rp_id, challenge_id);
+    let enrollment_url = format!("{}/passkey/enroll/{}", funnel_url, challenge_id);
     let qr_code = match generate_qr_code_simple(&enrollment_url) {
         Ok(qr) => qr,
         Err(e) => {
@@ -301,11 +321,14 @@ pub async fn passkey_setup_handler(
 
     let expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
 
-    info!("Setup initiated: funnel={}, enrollment_url={}", rp_id, enrollment_url);
+    info!(
+        "Setup initiated: funnel={}, enrollment_url={}",
+        funnel_url, enrollment_url
+    );
 
     Json(SetupResponse {
         success: true,
-        funnel_url: rp_id,
+        funnel_url,
         enrollment_url,
         qr_code,
         expires_at: expires_at.to_rfc3339(),
@@ -341,7 +364,8 @@ pub async fn enroll_complete_handler(
     };
     drop(pending);
 
-    let credential_id = req.get("id")
+    let credential_id = req
+        .get("id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_default();
@@ -354,13 +378,15 @@ pub async fn enroll_complete_handler(
         });
     }
 
-    let client_data_json = req.get("response")
+    let _client_data_json = req
+        .get("response")
         .and_then(|r| r.get("clientDataJSON"))
         .and_then(|v| v.as_str())
         .map(|s| String::from_utf8(STANDARD.decode(s).unwrap_or_default()).unwrap_or_default())
         .unwrap_or_default();
 
-    let attestation_object = req.get("response")
+    let attestation_object = req
+        .get("response")
         .and_then(|r| r.get("attestationObject"))
         .and_then(|v| v.as_str())
         .map(|s| STANDARD.decode(s).unwrap_or_default())
@@ -386,7 +412,8 @@ pub async fn enroll_complete_handler(
 
     let mut storage = load_passkeys().await.unwrap_or_default();
 
-    let device_name = req.get("deviceName")
+    let device_name = req
+        .get("deviceName")
         .and_then(|v| v.as_str().map(|s| s.to_string()));
 
     let credential = crate::passkey::models::PasskeyCredential {
@@ -442,9 +469,8 @@ async fn load_passkeys() -> std::io::Result<crate::passkey::models::PasskeyStora
     }
 
     match tokio::fs::read_to_string(PASSKEYS_FILE).await {
-        Ok(content) => {
-            serde_json::from_str(&content).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-        }
+        Ok(content) => serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
         Err(e) => Err(e),
     }
 }
@@ -459,7 +485,9 @@ async fn save_passkeys(storage: &crate::passkey::models::PasskeyStorage) -> std:
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(PASSKEYS_FILE, tokio::fs::Permissions::from_mode(0o600)).await.ok();
+        tokio::fs::set_permissions(PASSKEYS_FILE, tokio::fs::Permissions::from_mode(0o600))
+            .await
+            .ok();
     }
 
     Ok(())
@@ -474,7 +502,8 @@ pub async fn login_challenge_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<LoginChallengeRequest>,
 ) -> impl IntoResponse {
-    let rp_id = get_funnel_url().await
+    let rp_id = get_funnel_url()
+        .await
         .unwrap_or_else(|| "nanokvm".to_string());
 
     let challenge_id = PasskeyState::generate_challenge_id();
@@ -488,7 +517,10 @@ pub async fn login_challenge_handler(
         req.credential_id,
     ));
 
-    info!("Login challenge generated: id={}, rp_id={}", challenge_id, rp_id);
+    info!(
+        "Login challenge generated: id={}, rp_id={}",
+        challenge_id, rp_id
+    );
 
     Json(LoginChallengeResponse {
         challenge,
@@ -527,7 +559,8 @@ pub async fn login_verify_handler(
 
     const MAX_CREDENTIAL_ID_LENGTH: usize = 256;
 
-    let credential_id = req.get("id")
+    let credential_id = req
+        .get("id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_default();
@@ -542,13 +575,15 @@ pub async fn login_verify_handler(
         });
     }
 
-    let client_data_json = req.get("response")
+    let client_data_json = req
+        .get("response")
         .and_then(|r| r.get("clientDataJSON"))
         .and_then(|v| v.as_str())
         .map(|s| String::from_utf8(STANDARD.decode(s).unwrap_or_default()).unwrap_or_default())
         .unwrap_or_default();
 
-    let authenticator_data_str = req.get("response")
+    let authenticator_data_str = req
+        .get("response")
         .and_then(|r| r.get("authenticatorData"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
@@ -556,7 +591,8 @@ pub async fn login_verify_handler(
 
     let authenticator_data = STANDARD.decode(&authenticator_data_str).unwrap_or_default();
 
-    let signature_str = req.get("response")
+    let signature_str = req
+        .get("response")
         .and_then(|r| r.get("signature"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
@@ -576,7 +612,11 @@ pub async fn login_verify_handler(
 
     let storage = load_passkeys().await;
     let credential = match storage {
-        Ok(s) => s.credentials.iter().find(|c| c.id == credential_id),
+        Ok(s) => s
+            .credentials
+            .iter()
+            .find(|c| c.id == credential_id)
+            .cloned(),
         Err(e) => {
             error!("Failed to load passkeys: {}", e);
             None
@@ -585,7 +625,10 @@ pub async fn login_verify_handler(
 
     if let Some(ref expected_cred_id) = challenge.credential_id {
         if &credential_id != expected_cred_id {
-            warn!("Credential ID mismatch: expected {}, got {}", expected_cred_id, credential_id);
+            warn!(
+                "Credential ID mismatch: expected {}, got {}",
+                expected_cred_id, credential_id
+            );
             return Json(VerifyResponse {
                 success: false,
                 token: None,
@@ -595,13 +638,16 @@ pub async fn login_verify_handler(
         }
     }
 
-    let (auth_data, counter) = match credential {
+    let (auth_data, counter) = match &credential {
         Some(c) => {
             let auth_data = AuthenticatorData::parse(&authenticator_data);
             match auth_data {
                 Some(ad) => {
                     if ad.counter <= c.counter {
-                        warn!("Credential counter regression: {} <= {}", ad.counter, c.counter);
+                        warn!(
+                            "Credential counter regression: {} <= {}",
+                            ad.counter, c.counter
+                        );
                         return Json(VerifyResponse {
                             success: false,
                             token: None,
@@ -609,7 +655,8 @@ pub async fn login_verify_handler(
                             error: Some("Credential may have been cloned".to_string()),
                         });
                     }
-                    (ad, ad.counter)
+                    let counter = ad.counter;
+                    (ad, counter)
                 }
                 None => {
                     warn!("Failed to parse authenticator data");
@@ -644,16 +691,23 @@ pub async fn login_verify_handler(
     }
 
     let client_data_hash = {
-        let parsed: Result<serde_json::Map<String, serde_json::Value>, _> = serde_json::from_str(&client_data_json);
+        let parsed: Result<serde_json::Map<String, serde_json::Value>, _> =
+            serde_json::from_str(&client_data_json);
         match parsed {
             Ok(map) => {
                 let challenge_b64 = map.get("challenge").and_then(|v| v.as_str()).unwrap_or("");
                 let origin = map.get("origin").and_then(|v| v.as_str()).unwrap_or("");
                 let type_ = map.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                let cross_origin = map.get("crossOrigin").and_then(|v| v.as_bool()).unwrap_or(false);
+                let cross_origin = map
+                    .get("crossOrigin")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 if challenge_b64 != challenge.challenge {
-                    warn!("Challenge mismatch: expected {}, got {}", challenge.challenge, challenge_b64);
+                    warn!(
+                        "Challenge mismatch: expected {}, got {}",
+                        challenge.challenge, challenge_b64
+                    );
                     return Json(VerifyResponse {
                         success: false,
                         token: None,
@@ -664,7 +718,10 @@ pub async fn login_verify_handler(
 
                 let expected_origin = format!("https://{}", challenge.rp_id);
                 if origin != expected_origin {
-                    warn!("Origin mismatch: expected {}, got {}", expected_origin, origin);
+                    warn!(
+                        "Origin mismatch: expected {}, got {}",
+                        expected_origin, origin
+                    );
                     return Json(VerifyResponse {
                         success: false,
                         token: None,
@@ -673,8 +730,10 @@ pub async fn login_verify_handler(
                     });
                 }
 
-                let json = format!(r#"{{"type":"{}","challenge":"{}","origin":"{}","crossOrigin":{}}}"#,
-                    type_, challenge_b64, origin, cross_origin);
+                let json = format!(
+                    r#"{{"type":"{}","challenge":"{}","origin":"{}","crossOrigin":{}}}"#,
+                    type_, challenge_b64, origin, cross_origin
+                );
                 sha2::Sha256::digest(json.as_bytes()).to_vec()
             }
             Err(_) => {
@@ -717,7 +776,11 @@ pub async fn login_verify_handler(
                 }
             };
 
-            if let Some(cred) = storage.credentials.iter_mut().find(|c| c.id == credential_id) {
+            if let Some(cred) = storage
+                .credentials
+                .iter_mut()
+                .find(|c| c.id == credential_id)
+            {
                 cred.counter = counter;
             }
 
@@ -739,12 +802,23 @@ pub async fn login_verify_handler(
     *pending = None;
     drop(pending);
 
-    info!("Passkey verified successfully: id={}, counter={}", credential_id, counter);
+    info!(
+        "Passkey verified successfully: id={}, counter={}",
+        credential_id, counter
+    );
 
     let account = get_account().await;
-    match crate::auth::generate_token(&state, &account.username, account.must_change_password).await {
+    match crate::auth::generate_token(&state, &account.username, account.must_change_password).await
+    {
         Ok(token) => {
-            log_audit_event("PASSKEY_LOGIN_SUCCESS", &account.username, true, "Passkey login successful", None).await;
+            log_audit_event(
+                "PASSKEY_LOGIN_SUCCESS",
+                &account.username,
+                true,
+                "Passkey login successful",
+                None,
+            )
+            .await;
             Json(VerifyResponse {
                 success: true,
                 token: Some(token),
@@ -768,7 +842,8 @@ pub async fn recover_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let code = req.get("recovery_code")
+    let code = req
+        .get("recovery_code")
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
@@ -785,9 +860,22 @@ pub async fn recover_handler(
         Ok((true, remaining)) => {
             info!("Recovery code validated, remaining: {}", remaining);
             let account = get_account().await;
-            match crate::auth::generate_token(&state, &account.username, account.must_change_password).await {
+            match crate::auth::generate_token(
+                &state,
+                &account.username,
+                account.must_change_password,
+            )
+            .await
+            {
                 Ok(token) => {
-                    log_audit_event("RECOVERY_SUCCESS", &account.username, true, "Recovery code login successful", None).await;
+                    log_audit_event(
+                        "RECOVERY_SUCCESS",
+                        &account.username,
+                        true,
+                        "Recovery code login successful",
+                        None,
+                    )
+                    .await;
                     Json(RecoverResponse {
                         success: true,
                         token: Some(token),
@@ -808,7 +896,14 @@ pub async fn recover_handler(
         }
         Ok((false, _)) => {
             warn!("Invalid recovery code: {}", code);
-            log_audit_event("RECOVERY_FAILED", "unknown", false, "Invalid recovery code attempted", None).await;
+            log_audit_event(
+                "RECOVERY_FAILED",
+                "unknown",
+                false,
+                "Invalid recovery code attempted",
+                None,
+            )
+            .await;
             Json(RecoverResponse {
                 success: false,
                 token: None,
@@ -834,7 +929,8 @@ pub async fn recovery_download_handler() -> impl IntoResponse {
             let parse_result: Result<serde_json::Value, _> = serde_json::from_str(&content);
             match parse_result {
                 Ok(codes) => {
-                    let codes_str = codes.get("codes")
+                    let codes_str = codes
+                        .get("codes")
                         .and_then(|v| v.as_array())
                         .map(|arr| {
                             arr.iter()
@@ -878,10 +974,14 @@ pub async fn qr_code_handler(Query(query): Query<QrQuery>) -> impl IntoResponse 
     match generate_qr_code_simple(&query.text) {
         Ok(qr_data) => {
             if let Some(base64_data) = qr_data.strip_prefix("data:image/png;base64,") {
-                let image_data = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, base64_data) {
+                let image_data = match base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    base64_data,
+                ) {
                     Ok(data) => data,
                     Err(_) => {
-                        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to decode QR").into_response();
+                        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to decode QR")
+                            .into_response();
                     }
                 };
                 ([(header::CONTENT_TYPE, "image/png")], image_data).into_response()

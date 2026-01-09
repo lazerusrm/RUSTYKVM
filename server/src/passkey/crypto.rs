@@ -1,5 +1,4 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -60,19 +59,23 @@ impl ClientData {
     pub fn parse(json: &str) -> Option<Self> {
         let parsed: HashMap<String, serde_json::Value> = serde_json::from_str(json).ok()?;
 
-        let type_ = parsed.get("type")
+        let type_ = parsed
+            .get("type")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())?;
 
-        let challenge = parsed.get("challenge")
+        let challenge = parsed
+            .get("challenge")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())?;
 
-        let origin = parsed.get("origin")
+        let origin = parsed
+            .get("origin")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())?;
 
-        let cross_origin = parsed.get("crossOrigin")
+        let cross_origin = parsed
+            .get("crossOrigin")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
@@ -85,8 +88,10 @@ impl ClientData {
     }
 
     pub fn hash(&self) -> Vec<u8> {
-        let json = format!(r#"{{"type":"{}","challenge":"{}","origin":"{}","crossOrigin":{}}}"#,
-            self.type_, self.challenge, self.origin, self.cross_origin);
+        let json = format!(
+            r#"{{"type":"{}","challenge":"{}","origin":"{}","crossOrigin":{}}}"#,
+            self.type_, self.challenge, self.origin, self.cross_origin
+        );
         Sha256::digest(json.as_bytes()).to_vec()
     }
 }
@@ -115,7 +120,7 @@ impl CoseKey {
                 asn1.extend_from_slice(&self.n);
 
                 let verifier = ring::signature::UnparsedPublicKey::new(
-                    &ring::signature::RSA_PKCS1_SHA_256,
+                    &ring::signature::RSA_PKCS1_2048_8192_SHA256,
                     asn1,
                 );
                 verifier.verify(message, signature).is_ok()
@@ -153,11 +158,9 @@ mod tests {
     #[test]
     fn test_authenticator_data_parse() {
         let data = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
-            0x01, 0x00, 0x00, 0x00, 0x01
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20, 0x01, 0x00, 0x00, 0x00, 0x01,
         ];
 
         let auth_data = AuthenticatorData::parse(&data).unwrap();
