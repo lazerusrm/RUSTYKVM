@@ -171,8 +171,9 @@ pub fn set_h264_gop(gop: u8) {
 }
 
 /// Enable/disable frame detection
+/// Note: The C library has a typo - it's "detact" not "detect"
 pub fn set_frame_detect(frame_detect: u8) {
-    call_kvm_fn_void!("set_frame_detect", SetFrameDetectFn, frame_detect);
+    call_kvm_fn_void!("set_frame_detact", SetFrameDetectFn, frame_detect);
 }
 
 /// Deinitialize KVM video hardware
