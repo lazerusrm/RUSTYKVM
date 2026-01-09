@@ -116,9 +116,7 @@ impl NetworkManager {
     }
 
     fn parse_mac(mac: &str) -> Result<String, NetworkError> {
-        let clean_mac = mac
-            .to_uppercase()
-            .replace(['-', ':', '.'], "");
+        let clean_mac = mac.to_uppercase().replace(['-', ':', '.'], "");
 
         if !MAC_REGEX.is_match(&clean_mac) {
             return Err(NetworkError::InvalidMac(mac.to_string()));
