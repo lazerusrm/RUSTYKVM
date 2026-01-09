@@ -164,8 +164,12 @@ jobs:
 
       - name: Package firmware
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          VERSION=${VERSION:-dev}
+          # Extract version - handle both tags and branch pushes
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION="dev"
+          fi
 
           # Copy binary
           mkdir -p deploy/kvmapp/server
