@@ -72,10 +72,8 @@ impl Deref for KvmFrame {
 impl Drop for KvmFrame {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
-            unsafe {
-                let mut p = self.ptr;
-                kvm_sys::free_kvmv_data(&mut p);
-            }
+            let mut p = self.ptr;
+            kvm_sys::free_kvmv_data(&mut p);
         }
     }
 }
@@ -90,10 +88,14 @@ impl Kvm {
         let _guard = KVM_LOCK.lock();
         if !KVM_INITIALIZED.load(Ordering::SeqCst) {
             info!("Initializing KVM hardware...");
-            unsafe {
-                kvm_sys::kvmv_init(0);
-                kvm_sys::set_venc_auto_recyc(1); // Enable automatic video encoder buffer recycling
+            // Check if library is loaded
+            if kvm_sys::is_library_loaded() {
+                info!("libkvm.so loaded successfully");
+            } else {
+                info!("WARNING: libkvm.so not loaded - video capture will not work");
             }
+            kvm_sys::kvmv_init(0);
+            kvm_sys::set_venc_auto_recyc(1); // Enable automatic video encoder buffer recycling
             KVM_INITIALIZED.store(true, Ordering::SeqCst);
             info!("KVM hardware initialized.");
         }
@@ -105,10 +107,8 @@ impl Kvm {
         let _guard = KVM_LOCK.lock();
         if KVM_INITIALIZED.load(Ordering::SeqCst) {
             info!("Deinitializing KVM hardware...");
-            unsafe {
-                kvm_sys::free_all_kvmv_data();
-                kvm_sys::kvmv_deinit();
-            }
+            kvm_sys::free_all_kvmv_data();
+            kvm_sys::kvmv_deinit();
             KVM_INITIALIZED.store(false, Ordering::SeqCst);
             info!("KVM hardware deinitialized.");
         }
@@ -132,9 +132,7 @@ impl Kvm {
         let mut data_ptr: *mut u8 = ptr::null_mut();
         let mut size: u32 = 0;
 
-        let ret = unsafe {
-            kvm_sys::kvmv_read_img(width, height, img_type, quality, &mut data_ptr, &mut size)
-        };
+        let ret = kvm_sys::kvmv_read_img(width, height, img_type, quality, &mut data_ptr, &mut size);
 
         if ret < 0 {
             return Err(match ret {
@@ -157,16 +155,16 @@ impl Kvm {
     }
 
     pub fn set_h264_gop(&self, gop: u8) {
-        unsafe { kvm_sys::set_h264_gop(gop) };
+        kvm_sys::set_h264_gop(gop);
     }
 
     pub fn set_frame_detect(&self, frame: u8) {
-        unsafe { kvm_sys::set_frame_detect(frame) };
+        kvm_sys::set_frame_detect(frame);
     }
 
     pub fn set_hdmi(&self, enable: bool) -> Result<(), KvmError> {
         let val = if enable { 1 } else { 0 };
-        unsafe { kvm_sys::kvmv_hdmi_control(val) };
+        kvm_sys::kvmv_hdmi_control(val);
         Ok(())
     }
 }
