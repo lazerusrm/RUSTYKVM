@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use qrcode::render::svg;
 use qrcode::QrCode;

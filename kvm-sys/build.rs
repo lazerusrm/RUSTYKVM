@@ -6,8 +6,9 @@ fn main() {
     let target = env::var("TARGET").unwrap_or_default();
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    // Check if we're in CI or if KVM_STUB is set
-    let use_stub = env::var("CI").is_ok() || env::var("KVM_STUB").is_ok();
+    // Only use stubs if KVM_STUB is explicitly set
+    // CI builds for RISC-V should link dynamically against libkvm on the device
+    let use_stub = env::var("KVM_STUB").is_ok();
 
     if use_stub {
         // Create stub library for CI builds

@@ -112,6 +112,7 @@ fn bind_addr(port: u16) -> SocketAddr {
 
 // Shared application state
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub struct AppState {
     config: Arc<Config>,
     screen_config: crate::webrtc::screen::SharedScreenConfig,

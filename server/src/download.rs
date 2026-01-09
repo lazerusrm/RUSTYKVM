@@ -67,7 +67,7 @@ pub async fn image_enabled_handler() -> impl IntoResponse {
 pub async fn status_image_handler() -> impl IntoResponse {
     if let Ok(content) = fs::read_to_string(SENTINEL_PATH).await {
         let parts: Vec<&str> = content.split(';').collect();
-        let file = parts.get(0).unwrap_or(&"").to_string();
+        let file = parts.first().unwrap_or(&"").to_string();
         let percentage = parts.get(1).unwrap_or(&"").to_string();
 
         Json(StatusImageRsp {
@@ -185,7 +185,7 @@ pub async fn download_image_url_handler(Json(req): Json<DownloadImageUrlReq>) ->
 
     let raw_filename = url
         .path_segments()
-        .and_then(|s| s.last())
+        .and_then(|mut s| s.next_back())
         .unwrap_or("image.iso");
 
     let sanitized = sanitize_filename(raw_filename);
@@ -243,7 +243,7 @@ async fn perform_url_download(url: String, filename: String) -> anyhow::Result<(
             return Err(anyhow::anyhow!("Download exceeds 10GB limit"));
         }
 
-        file.write_all(&chunk).await?;
+        file.write_all(chunk.as_ref()).await?;
         downloaded += chunk.len() as u64;
 
         if last_update.elapsed() > std::time::Duration::from_millis(2500) {

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::passkey::models::{RecoveryCode, RecoveryStorage, RECOVERY_CODES_FILE};
 use chrono::Utc;
 use rand::Rng;

@@ -3,6 +3,8 @@
 //! Provides WebRTC peer connections for low-latency HDMI streaming.
 //! Optimized for single-source (HDMI) distribution to multiple clients.
 
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

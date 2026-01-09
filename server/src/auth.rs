@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use axum::{
     extract::{Json, State},
     http::{header, HeaderMap, HeaderName, Request, StatusCode},

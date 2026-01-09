@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::AppState;
 use axum::http::StatusCode;
 use axum::{

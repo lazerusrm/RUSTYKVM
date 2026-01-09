@@ -155,7 +155,7 @@ fn generate_random_secret() -> String {
     let rng = ring::rand::SystemRandom::new();
     let mut key = [0u8; 32];
     rng.fill(&mut key).expect("RNG failure");
-    base64::engine::general_purpose::STANDARD.encode(&key)
+    base64::engine::general_purpose::STANDARD.encode(key)
 }
 
 fn default_jwt_duration() -> u64 {

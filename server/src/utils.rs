@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use aes::Aes256;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use cbc::Decryptor;

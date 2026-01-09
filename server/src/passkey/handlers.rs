@@ -96,7 +96,7 @@ async fn check_passkey_exists() -> bool {
 
 async fn enable_tailscale_funnel() -> bool {
     let output = Command::new("tailscale")
-        .args(&["serve", "https", "localhost:8443"])
+        .args(["serve", "https", "localhost:8443"])
         .output()
         .await;
 
@@ -109,7 +109,7 @@ async fn enable_tailscale_funnel() -> bool {
 async fn wait_for_funnel_ready(max_seconds: u64) -> Option<String> {
     for _ in 0..max_seconds {
         let status = Command::new("tailscale")
-            .args(&["serve", "status"])
+            .args(["serve", "status"])
             .output()
             .await
             .ok()
@@ -117,9 +117,7 @@ async fn wait_for_funnel_ready(max_seconds: u64) -> Option<String> {
 
         if let Some(s) = status {
             if let Some(start) = s.find("https://") {
-                let end = s[start..]
-                    .find(|c| c == '\n' || c == ' ')
-                    .unwrap_or(s[start..].len());
+                let end = s[start..].find(['\n', ' ']).unwrap_or(s[start..].len());
                 let url = &s[start..start + end];
                 if url.contains(".ts.net") {
                     return Some(url.to_string());
@@ -173,7 +171,7 @@ async fn check_tailscale_installed() -> bool {
 
 async fn check_tailscale_connected() -> bool {
     let output = Command::new("tailscale")
-        .args(&["status", "--json"])
+        .args(["status", "--json"])
         .output()
         .await
         .ok()
@@ -189,7 +187,7 @@ async fn check_tailscale_connected() -> bool {
 
 async fn check_funnel_active() -> bool {
     let output = Command::new("tailscale")
-        .args(&["serve", "status"])
+        .args(["serve", "status"])
         .output()
         .await
         .ok()
@@ -204,7 +202,7 @@ async fn check_funnel_active() -> bool {
 
 async fn get_funnel_url() -> Option<String> {
     let output = Command::new("tailscale")
-        .args(&["serve", "status"])
+        .args(["serve", "status"])
         .output()
         .await
         .ok()
@@ -338,7 +336,7 @@ pub async fn passkey_setup_handler(
 fn generate_random_challenge() -> String {
     let mut challenge = [0u8; 32];
     rand::thread_rng().fill(&mut challenge);
-    STANDARD.encode(&challenge)
+    STANDARD.encode(challenge)
 }
 
 fn generate_user_id() -> Vec<u8> {
