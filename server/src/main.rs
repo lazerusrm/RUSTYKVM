@@ -644,11 +644,25 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
         interval.tick().await;
         if state.tx_mjpeg.receiver_count() > 0 {
             let kvm_state = state.clone();
-            if let Ok(Ok(frame)) =
-                tokio::task::spawn_blocking(move || kvm_state.kvm.get_mjpeg(width, height, quality))
-                    .await
+            match tokio::task::spawn_blocking(move || {
+                kvm_state.kvm.get_mjpeg(width, height, quality)
+            })
+            .await
             {
-                let _ = state.tx_mjpeg.send(frame.into_bytes());
+                Ok(Ok(frame)) => {
+                    let _ = state.tx_mjpeg.send(frame.into_bytes());
+                }
+                Ok(Err(e)) => {
+                    // Log KVM errors (but not too frequently for common ones like NotExist)
+                    match &e {
+                        kvm::KvmError::NotExist => {}   // Frame not ready, normal
+                        kvm::KvmError::Retrieving => {} // Still retrieving, normal
+                        _ => tracing::warn!("MJPEG capture error: {}", e),
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("MJPEG spawn_blocking error: {}", e);
+                }
             }
         }
         let frame_interval = Duration::from_secs_f64(1.0 / fps as f64);

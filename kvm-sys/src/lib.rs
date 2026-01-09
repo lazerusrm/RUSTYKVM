@@ -111,17 +111,46 @@ pub fn kvmv_read_img(
     pp_kvm_data: *mut *mut u8,
     p_kvmv_data_size: *mut u32,
 ) -> c_int {
-    call_kvm_fn!(
-        "kvmv_read_img",
-        KvmvReadImgFn,
-        width,
-        height,
-        img_type,
-        quality,
-        pp_kvm_data,
-        p_kvmv_data_size
-    );
-    // Return error if library not loaded
+    let lib_guard = get_library().lock().unwrap();
+    if let Some(ref lib) = *lib_guard {
+        unsafe {
+            if let Ok(func) = lib.get::<Symbol<KvmvReadImgFn>>(b"kvmv_read_img") {
+                let ret = func(
+                    width,
+                    height,
+                    img_type,
+                    quality,
+                    pp_kvm_data,
+                    p_kvmv_data_size,
+                );
+                // Debug: log first few calls and any errors
+                static DEBUG_COUNT: std::sync::atomic::AtomicU32 =
+                    std::sync::atomic::AtomicU32::new(0);
+                let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if count < 10 || ret < 0 {
+                    let size = if p_kvmv_data_size.is_null() {
+                        0
+                    } else {
+                        *p_kvmv_data_size
+                    };
+                    let ptr_val = if pp_kvm_data.is_null() {
+                        0
+                    } else {
+                        *pp_kvm_data as usize
+                    };
+                    eprintln!(
+                        "[kvm-sys] kvmv_read_img({}x{}, type={}, q={}) -> ret={}, size={}, ptr={:#x}",
+                        width, height, img_type, quality, ret, size, ptr_val
+                    );
+                }
+                return ret;
+            } else {
+                eprintln!("[kvm-sys] kvmv_read_img: symbol not found");
+            }
+        }
+    } else {
+        eprintln!("[kvm-sys] kvmv_read_img: library not loaded");
+    }
     IMG_NOT_EXIST
 }
 
