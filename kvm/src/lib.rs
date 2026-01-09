@@ -132,7 +132,8 @@ impl Kvm {
         let mut data_ptr: *mut u8 = ptr::null_mut();
         let mut size: u32 = 0;
 
-        let ret = kvm_sys::kvmv_read_img(width, height, img_type, quality, &mut data_ptr, &mut size);
+        let ret =
+            kvm_sys::kvmv_read_img(width, height, img_type, quality, &mut data_ptr, &mut size);
 
         if ret < 0 {
             return Err(match ret {
