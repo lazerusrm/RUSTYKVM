@@ -92,11 +92,26 @@ impl Kvm {
             info!("Initializing KVM hardware...");
             unsafe {
                 kvm_sys::kvmv_init(0);
+                kvm_sys::set_venc_auto_recyc(1); // Enable automatic video encoder buffer recycling
             }
             KVM_INITIALIZED.store(true, Ordering::SeqCst);
             info!("KVM hardware initialized.");
         }
         Self {}
+    }
+
+    /// Deinitialize KVM hardware - should be called on shutdown
+    pub fn deinit() {
+        let _guard = KVM_LOCK.lock();
+        if KVM_INITIALIZED.load(Ordering::SeqCst) {
+            info!("Deinitializing KVM hardware...");
+            unsafe {
+                kvm_sys::free_all_kvmv_data();
+                kvm_sys::kvmv_deinit();
+            }
+            KVM_INITIALIZED.store(false, Ordering::SeqCst);
+            info!("KVM hardware deinitialized.");
+        }
     }
 
     pub fn get_mjpeg(&self, width: u16, height: u16, quality: u16) -> Result<KvmFrame, KvmError> {

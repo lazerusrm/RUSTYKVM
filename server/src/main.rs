@@ -585,6 +585,12 @@ async fn shutdown_signal() {
     }
 
     tracing::info!("Shutdown signal received, starting graceful shutdown...");
+
+    // Cleanup KVM hardware resources
+    #[cfg(target_os = "linux")]
+    {
+        ::kvm::Kvm::deinit();
+    }
 }
 
 fn init_logging(config: &Config) -> Option<tracing_appender::non_blocking::WorkerGuard> {
