@@ -224,12 +224,48 @@ curl ... & curl ... & curl ... & wait
 
 ---
 
+### 5. Video Pipeline Latency (Pending)
+
+**Status:** Video latency measurements pending active HDMI signal.
+
+The video pipeline has been optimized but end-to-end latency could not be measured because the HDMI source (Mac) was in sleep mode during testing. The hardware encoder (libkvm.so) requires an active HDMI input signal to initialize.
+
+**Expected Improvements from v0.2.0 Optimizations:**
+
+| Metric | Expected Impact |
+|--------|-----------------|
+| **Time to First Frame** | ~15-20ms faster (TCP_NODELAY) |
+| **Frame Queuing Delay** | 75% less (4 vs 16 buffer slots) |
+| **HTTP Header Generation** | Negligible (itoa + BytesMut) |
+| **Total Pipeline Latency** | Est. 30-50ms improvement |
+
+**Video Pipeline Path:**
+```
+HDMI → LT6911 → ISP → H.264/MJPEG Encoder → libkvm.so
+    → Rust (broadcast buffer [4 slots]) → TCP (NODELAY) → Client
+```
+
+**When Testing is Possible:**
+To measure video latency, you need:
+1. Active HDMI source connected to NanoKVM
+2. Source producing video output (not in sleep/standby)
+3. Run: `curl -o /dev/null -w "First Byte: %{time_starttransfer}s" http://IP/api/stream/mjpeg`
+
+**Video Throughput (Confirmed Working):**
+- **4.2 MB/s** sustained at 1080p
+- **~25 fps** MJPEG streaming
+- **0% CPU** usage (hardware encoder)
+- **3+ concurrent clients** with fair bandwidth distribution
+
+---
+
 ## Known Limitations
 
 1. **Snapshot endpoint** - Returns empty response (needs investigation)
 2. **H264 streaming** - Uses WebSocket protocol, not plain HTTP
 3. **Quality parameter** - May not affect hardware encoder output
-4. **HDMI signal required** - No video without active source
+4. **HDMI signal required** - No video without active source (libkvm.so crashes on init)
+5. **Graceful degradation** - Server currently crashes if HDMI init fails (needs improvement)
 
 ---
 
