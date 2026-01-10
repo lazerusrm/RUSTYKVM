@@ -671,10 +671,12 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
                     let _ = state.tx_mjpeg.send(frame.into_bytes());
                 }
                 Ok(Err(e)) => {
-                    // Log KVM errors (but not too frequently for common ones like NotExist)
+                    // Log KVM errors (but not too frequently for expected conditions)
                     match &e {
-                        kvm::KvmError::NotExist => {}   // Frame not ready, normal
-                        kvm::KvmError::Retrieving => {} // Still retrieving, normal
+                        kvm::KvmError::NotExist => {}        // Frame not ready, normal
+                        kvm::KvmError::Retrieving => {}      // Still retrieving, normal
+                        kvm::KvmError::NotInitialized => {}  // No HDMI, will retry
+                        kvm::KvmError::LibraryNotLoaded => {} // No libkvm.so
                         _ => tracing::warn!("MJPEG capture error: {}", e),
                     }
                 }
