@@ -1,6 +1,6 @@
 [package]
 name = "nanokvm-server"
-version = "0.2.12"
+version = "0.2.13"
 edition = "2021"
 license = "GPL-3.0"
 description = "Rust implementation of NanoKVM server - IP-KVM for remote machine control"
@@ -68,11 +68,13 @@ qrcode = "0.14"
 byteorder = "1.5"
 socket2 = "0.5"
 itoa = "1.0"
+urlencoding = "2.1"
 
 # Platform-specific dependencies
+# TLS dependencies - ring works on all platforms including RISC-V
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
-rustls = { version = "0.23", features = ["aws-lc-rs"] }
-aws-lc-rs = "1.9"
 rustls-pemfile = "2"
 tokio-rustls = "0.26"
 

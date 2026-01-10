@@ -66,8 +66,8 @@ use crate::application::{
     update_handler,
 };
 use crate::auth::{
-    auth_middleware, change_password_handler, get_account_handler, is_password_updated_handler,
-    login_handler, logout_handler,
+    auth_middleware, change_password_handler, get_account_handler, get_encryption_key_handler,
+    is_password_updated_handler, login_handler, logout_handler,
 };
 use crate::config::Config;
 use crate::hid::{
@@ -168,6 +168,12 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() {
+    // Install rustls crypto provider (required for TLS support)
+    // Uses ring as the crypto backend which works on all platforms including RISC-V
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // Create shutdown broadcast channel
     let (_shutdown_tx, _) = broadcast::channel::<()>(1);
 
@@ -465,6 +471,7 @@ async fn main() {
         .route("/api/logout", post(logout_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/account", get(get_account_handler))
+        .route("/api/auth/encryption-key", get(get_encryption_key_handler))
         .route(
             "/api/auth/password",
             get(is_password_updated_handler).post(change_password_handler),

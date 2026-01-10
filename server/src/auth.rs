@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 static X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 static X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
-use crate::utils::decrypt_password;
+use crate::utils::{decrypt_password, get_secret_key};
 use crate::AppState;
 use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::Utc;
@@ -72,8 +72,8 @@ pub struct AuditLogEntry {
 
 #[derive(Debug, Deserialize)]
 pub struct ChangePasswordReq {
-    pub old_password: String,
-    pub new_password: String,
+    pub username: String,
+    pub password: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,6 +85,37 @@ pub struct IsPasswordUpdatedRsp {
 #[derive(Debug, Serialize)]
 pub struct GetAccountRsp {
     pub username: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EncryptionKeyRsp {
+    pub key: String,
+}
+
+/// API response wrapper matching Go server format
+#[derive(Debug, Serialize)]
+pub struct ApiResponse<T: Serialize> {
+    pub code: i32,
+    pub msg: String,
+    pub data: Option<T>,
+}
+
+impl<T: Serialize> ApiResponse<T> {
+    pub fn ok(data: T) -> Self {
+        Self {
+            code: 0,
+            msg: "success".to_string(),
+            data: Some(data),
+        }
+    }
+
+    pub fn err(code: i32, msg: &str) -> ApiResponse<()> {
+        ApiResponse {
+            code,
+            msg: msg.to_string(),
+            data: None,
+        }
+    }
 }
 
 pub async fn get_account() -> Account {
@@ -133,11 +164,11 @@ pub async fn login_handler(
     if state.config.authentication == "disable" {
         return (
             jar,
-            Json(LoginRsp {
+            Json(ApiResponse::ok(LoginRsp {
                 token: "disabled".to_string(),
                 requires_password_change: false,
                 password_expiry_days: None,
-            }),
+            })),
         )
             .into_response();
     }
@@ -154,7 +185,7 @@ pub async fn login_handler(
         .into();
 
     if !password_valid || !username_matches {
-        return (StatusCode::UNAUTHORIZED, "Invalid username or password").into_response();
+        return Json(ApiResponse::<()>::err(-2, "Invalid username or password")).into_response();
     }
 
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -177,21 +208,21 @@ pub async fn login_handler(
         Ok(token) => {
             let cookie = Cookie::build((COOKIE_NAME, token.clone()))
                 .path("/")
-                .http_only(true)
+                .http_only(false)  // Must be false so frontend JS can read it for route protection
                 .same_site(SameSite::Lax)
                 .build();
 
             (
                 jar.add(cookie),
-                Json(LoginRsp {
+                Json(ApiResponse::ok(LoginRsp {
                     token,
                     requires_password_change: account.must_change_password,
                     password_expiry_days: None,
-                }),
+                })),
             )
                 .into_response()
         }
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Token generation failed").into_response(),
+        Err(_) => Json(ApiResponse::<()>::err(-1, "Token generation failed")).into_response(),
     }
 }
 
@@ -210,14 +241,10 @@ pub async fn change_password_handler(
 ) -> impl IntoResponse {
     let mut account = get_account().await;
 
-    let old_plain = decrypt_password(&req.old_password).unwrap_or(req.old_password.clone());
-    let new_plain = decrypt_password(&req.new_password).unwrap_or(req.new_password.clone());
-
-    if !verify(&old_plain, &account.password).unwrap_or(false) {
-        return (StatusCode::BAD_REQUEST, "Invalid old password").into_response();
-    }
+    let new_plain = decrypt_password(&req.password).unwrap_or(req.password.clone());
 
     if let Ok(hashed) = hash(new_plain, DEFAULT_COST) {
+        account.username = req.username;
         account.password = hashed;
         account.must_change_password = false;
         account.last_password_change = Some(
@@ -227,25 +254,34 @@ pub async fn change_password_handler(
                 .as_secs(),
         );
         if save_account(&account).await.is_ok() {
-            return StatusCode::OK.into_response();
+            return Json(ApiResponse::ok(())).into_response();
         }
     }
 
-    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    Json(ApiResponse::<()>::err(-1, "Failed to change password")).into_response()
 }
 
 pub async fn is_password_updated_handler() -> impl IntoResponse {
     let updated = Path::new(PWD_FILE).exists();
-    Json(IsPasswordUpdatedRsp {
+    Json(ApiResponse::ok(IsPasswordUpdatedRsp {
         is_updated: updated,
-    })
+    }))
 }
 
 pub async fn get_account_handler() -> impl IntoResponse {
     let account = get_account().await;
-    Json(GetAccountRsp {
+    Json(ApiResponse::ok(GetAccountRsp {
         username: account.username,
-    })
+    }))
+}
+
+/// Return the device-specific encryption key for frontend password encryption.
+/// This endpoint is public (no auth required) since the key is needed before login.
+pub async fn get_encryption_key_handler() -> impl IntoResponse {
+    match get_secret_key() {
+        Ok(key) => Json(ApiResponse::ok(EncryptionKeyRsp { key })).into_response(),
+        Err(_) => Json(ApiResponse::<()>::err(-1, "Failed to get encryption key")).into_response(),
+    }
 }
 
 pub async fn auth_middleware(

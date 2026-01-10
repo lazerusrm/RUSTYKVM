@@ -11,14 +11,64 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 const SECRET_KEY_ENV: &str = "NANOKVM_SECRET_KEY";
+const SECRET_KEY_FILE: &str = "/etc/kvm/secret_key";
+const SECRET_KEY_LENGTH: usize = 32;
 
-fn get_secret_key() -> anyhow::Result<String> {
-    env::var(SECRET_KEY_ENV).map_err(|_| {
-        anyhow::anyhow!(
-            "NANOKVM_SECRET_KEY environment variable is not set. \
-            Please set this variable to a secure key before running the application."
-        )
-    })
+/// Get or generate the device-specific encryption key.
+/// Priority: 1) Environment variable, 2) File, 3) Generate and save new key
+pub fn get_secret_key() -> anyhow::Result<String> {
+    // First check environment variable
+    if let Ok(key) = env::var(SECRET_KEY_ENV) {
+        if !key.is_empty() {
+            return Ok(key);
+        }
+    }
+
+    // Check if key file exists
+    if let Ok(key) = fs::read_to_string(SECRET_KEY_FILE) {
+        let key = key.trim().to_string();
+        if !key.is_empty() {
+            return Ok(key);
+        }
+    }
+
+    // Generate new key and save it
+    let key = generate_secret_key();
+    save_secret_key(&key)?;
+    Ok(key)
+}
+
+/// Generate a cryptographically secure random key
+fn generate_secret_key() -> String {
+    use rand::Rng;
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = rand::thread_rng();
+    (0..SECRET_KEY_LENGTH)
+        .map(|_| {
+            let idx = rng.gen_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect()
+}
+
+/// Save the secret key to file with restricted permissions
+fn save_secret_key(key: &str) -> anyhow::Result<()> {
+    // Ensure directory exists
+    if let Some(parent) = Path::new(SECRET_KEY_FILE).parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    // Write key to file
+    fs::write(SECRET_KEY_FILE, key)?;
+
+    // Set restrictive permissions (owner read/write only)
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(SECRET_KEY_FILE, fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(())
 }
 
 pub fn decrypt_password(ciphertext: &str) -> anyhow::Result<String> {
@@ -26,7 +76,12 @@ pub fn decrypt_password(ciphertext: &str) -> anyhow::Result<String> {
         return Ok(String::new());
     }
 
-    let data = BASE64.decode(ciphertext)?;
+    // URL-decode first (frontend uses encodeURIComponent)
+    let decoded_ciphertext = urlencoding::decode(ciphertext)
+        .map(|s| s.into_owned())
+        .unwrap_or_else(|_| ciphertext.to_string());
+
+    let data = BASE64.decode(&decoded_ciphertext)?;
 
     if data.len() < 16 || &data[0..8] != b"Salted__" {
         return Err(anyhow::anyhow!("Invalid format"));
