@@ -340,49 +340,45 @@ The NanoKVM-RS Rust port delivers production-ready performance with **40% less R
 3. **Reduced HID timeout** (10ms→5ms) - Faster USB HID report delivery
 4. **Optimized frame serialization** - BytesMut + itoa for zero-copy headers
 
-### Zero-Copy Frame Handling (v0.3.0)
+### Zero-Copy Frame Handling - Investigation Results
 
-**Implementation Complete** - True zero-copy video frame handling using `Bytes::from_owner()`.
+**Status: ❌ Not Viable** - Zero-copy using `Bytes::from_owner()` causes buffer exhaustion.
 
-#### What Changed
-The previous implementation copied each video frame from the hardware buffer:
+#### What Was Attempted
+We tried replacing the copy-based approach with true zero-copy:
 ```rust
-// OLD: Copied ~164KB per frame
+// Attempted zero-copy (FAILED)
 pub fn into_bytes(self) -> Bytes {
-    Bytes::copy_from_slice(self.as_slice())  // 164KB memcpy!
+    Bytes::from_owner(self)  // Wrap hardware buffer directly
 }
 ```
 
-The new implementation wraps the hardware buffer directly with zero copies:
-```rust
-// NEW: Zero-copy - wraps hardware buffer directly
-impl AsRef<[u8]> for KvmFrame {
-    fn as_ref(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-    }
-}
+#### Why It Failed
+When `Bytes::from_owner()` is used with Tokio broadcast channels:
+1. The Bytes instance is cloned for each subscriber (WebSocket client)
+2. Drop is only called when **ALL** clones are dropped
+3. On this embedded platform, hardware buffers (~10-15 available) fill up before clients consume frames
+4. Result: `-3 BufferFull` errors within seconds of streaming
 
+#### Working Implementation (Current)
+The copy-based approach remains the stable solution:
+```rust
 pub fn into_bytes(self) -> Bytes {
-    Bytes::from_owner(self)  // Zero-copy! Frame freed on drop
+    let slice = unsafe { std::slice::from_raw_parts(self.ptr, self.len) };
+    Bytes::copy_from_slice(slice)  // Copy ensures immediate buffer release
+    // KvmFrame::drop() called here, freeing hardware buffer
 }
 ```
 
-#### Expected Benefits
-- **Eliminates ~164KB memcpy per frame** (~4MB/s memory bandwidth saved)
-- **Lower CPU cache pressure** - No redundant data copying
-- **Better concurrent performance** - Less memory bus contention
-- **Reduced latency variance** - More predictable frame timing
-- **Memory bandwidth savings** - ~4MB/s at 25fps @ 1080p
+#### Performance Impact
+- **Cost:** ~164KB memcpy per frame (~4MB/s memory bandwidth)
+- **Acceptable because:** Hardware encoder uses 0% CPU, device has sufficient memory bandwidth
+- **Benefit:** Rock-solid stability with no buffer exhaustion
 
-#### Technical Details
-- Uses `bytes` crate v1.9+ `Bytes::from_owner()` API
-- `KvmFrame` implements `AsRef<[u8]>` for slice access
-- Hardware buffer freed via `free_kvmv_data()` when all `Bytes` clones are dropped
-- RAII pattern ensures no memory leaks
-
-#### Status
-- ✅ Implementation complete and compiles
-- ✅ Binary deployed and running on device
-- ⏳ Benchmark pending (requires active HDMI signal for video capture)
+#### Future Investigation
+A true zero-copy solution would require:
+- Custom buffer pool with explicit reference counting
+- Arc-based wrapper instead of Bytes::from_owner()
+- Different broadcast mechanism that doesn't clone Bytes
 
 The Rust implementation is production-ready with significantly lower resource usage and latency, making it ideal for the memory-constrained NanoKVM hardware (158 MB total RAM).
