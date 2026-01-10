@@ -1,5 +1,6 @@
 # NanoKVM-RS Build Environment
-# Multi-stage build for RISC-V cross-compilation
+# Multi-stage build for RISC-V cross-compilation with musl libc
+# The NanoKVM device runs musl, NOT glibc!
 
 FROM ubuntu:24.04 AS builder
 
@@ -10,26 +11,37 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     curl \
     build-essential \
-    gcc-riscv64-linux-gnu \
-    g++-riscv64-linux-gnu \
+    cmake \
     pkg-config \
     libssl-dev \
     ca-certificates \
     git \
+    xz-utils \
+    wget \
+    clang \
     && rm -rf /var/lib/apt/lists/*
+
+# Download and install musl cross-compiler for RISC-V
+# Using bootlin prebuilt toolchain
+RUN mkdir -p /opt/riscv-musl && \
+    wget -q https://toolchains.bootlin.com/downloads/releases/toolchains/riscv64-lp64d/tarballs/riscv64-lp64d--musl--stable-2024.05-1.tar.xz -O /tmp/toolchain.tar.xz && \
+    tar -xf /tmp/toolchain.tar.xz -C /opt/riscv-musl --strip-components=1 && \
+    rm /tmp/toolchain.tar.xz
+
+ENV PATH="/opt/riscv-musl/bin:${PATH}"
 
 # Install Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Add RISC-V target
-RUN rustup target add riscv64gc-unknown-linux-gnu
+# Add RISC-V musl target
+RUN rustup target add riscv64gc-unknown-linux-musl
 
-# Set up cross-compilation environment
-ENV CC_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-gcc
-ENV CXX_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-g++
-ENV CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc
-ENV AR_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-ar
+# Set up cross-compilation environment for musl
+ENV CC_riscv64gc_unknown_linux_musl=riscv64-linux-gcc
+ENV CXX_riscv64gc_unknown_linux_musl=riscv64-linux-g++
+ENV CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=riscv64-linux-gcc
+ENV AR_riscv64gc_unknown_linux_musl=riscv64-linux-ar
 
 # Create build directory
 WORKDIR /build
@@ -38,29 +50,33 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY server/Cargo.toml server/
 COPY kvm-sys/Cargo.toml kvm-sys/
+COPY kvm/Cargo.toml kvm/
 COPY hid/Cargo.toml hid/
 COPY vm/Cargo.toml vm/
 COPY audio/Cargo.toml audio/
 COPY storage/Cargo.toml storage/
+COPY network/Cargo.toml network/
 COPY .cargo .cargo
 
 # Create dummy source files for dependency compilation
-RUN mkdir -p server/src kvm-sys/src hid/src vm/src audio/src storage/src \
+RUN mkdir -p server/src kvm-sys/src kvm/src hid/src vm/src audio/src storage/src network/src \
     && echo "fn main() {}" > server/src/main.rs \
     && echo "pub fn dummy() {}" > kvm-sys/src/lib.rs \
+    && echo "pub fn dummy() {}" > kvm/src/lib.rs \
     && echo "pub fn dummy() {}" > hid/src/lib.rs \
     && echo "pub fn dummy() {}" > vm/src/lib.rs \
     && echo "pub fn dummy() {}" > audio/src/lib.rs \
-    && echo "pub fn dummy() {}" > storage/src/lib.rs
+    && echo "pub fn dummy() {}" > storage/src/lib.rs \
+    && echo "pub fn dummy() {}" > network/src/lib.rs
 
 # Build dependencies (this layer gets cached)
-RUN cargo build --release --target riscv64gc-unknown-linux-gnu 2>/dev/null || true
+RUN cargo build --release --target riscv64gc-unknown-linux-musl 2>/dev/null || true
 
 # Now copy the real source code
 COPY . .
 
 # Build the actual project
-RUN cargo build --release --target riscv64gc-unknown-linux-gnu
+RUN cargo build --release --target riscv64gc-unknown-linux-musl
 
 # Create deployment package
 FROM ubuntu:24.04 AS packager
@@ -70,7 +86,7 @@ RUN apt-get update && apt-get install -y tar && rm -rf /var/lib/apt/lists/*
 WORKDIR /package
 
 # Copy binary
-COPY --from=builder /build/target/riscv64gc-unknown-linux-gnu/release/nanokvm-server ./
+COPY --from=builder /build/target/riscv64gc-unknown-linux-musl/release/nanokvm-server ./
 
 # Copy web assets
 COPY web/ ./web/

@@ -19,6 +19,14 @@ pub struct SignalingMessage {
     pub data: String,
 }
 
+/// The RTCSessionDescription format sent by the browser
+#[derive(Debug, Deserialize)]
+struct RtcSessionDescription {
+    #[serde(rename = "type")]
+    sdp_type: String,
+    sdp: String,
+}
+
 pub async fn h264_ws_handler(
     ws: axum::extract::WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
@@ -67,17 +75,32 @@ async fn handle_ws_signaling(socket: WebSocket, state: Arc<AppState>) {
 
             match sig_msg.event.as_str() {
                 "video-offer" => {
+                    // Parse the JSON data to extract the SDP string
+                    // Frontend sends: {"type":"offer","sdp":"v=0\r\n..."}
+                    let sdp = match serde_json::from_str::<RtcSessionDescription>(&sig_msg.data) {
+                        Ok(desc) => desc.sdp,
+                        Err(e) => {
+                            error!("Failed to parse SDP offer JSON: {}", e);
+                            continue;
+                        }
+                    };
+
                     let offer = SdpOffer {
                         sdp_type: "offer".to_string(),
-                        sdp: sig_msg.data,
+                        sdp,
                     };
 
                     match webrtc_mgr.handle_offer("default", offer).await {
                         Ok((answer, mut handle)) => {
+                            // Send answer as JSON object matching RTCSessionDescription format
+                            let answer_json = serde_json::json!({
+                                "type": "answer",
+                                "sdp": answer.sdp
+                            });
                             let _ = msg_tx
                                 .send(SignalingMessage {
                                     event: "video-answer".to_string(),
-                                    data: answer.sdp,
+                                    data: answer_json.to_string(),
                                 })
                                 .await;
 
