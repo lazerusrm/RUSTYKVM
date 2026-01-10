@@ -300,7 +300,9 @@ async fn main() {
         });
     }
 
-    let web_path = "web";
+    // Use absolute path to web assets - /kvmapp/server/web has the actual content
+    // /tmp/server/web may have empty files due to init script copy issues
+    let web_path = "/kvmapp/server/web";
 
     // 4. Build Router
     #[allow(unused_mut)] // mut needed for cfg(target_os = "linux") blocks
