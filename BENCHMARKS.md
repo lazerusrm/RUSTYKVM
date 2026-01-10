@@ -264,6 +264,27 @@ HDMI → LT6911 → ISP → MJPEG Encoder → libkvm.so (~15ms)
 | **CPU Usage** | 0% (hardware encoder) |
 | **Concurrent Clients** | 3+ with fair distribution |
 
+#### H.264 Streaming (WebSocket)
+
+| Run | Time to First Frame | Throughput | Frame Rate |
+|-----|---------------------|------------|------------|
+| 1 (cold) | 99ms | 151 KB/s | 22 fps |
+| 2 | 71ms | 137 KB/s | 22 fps |
+| 3 (warm) | **57ms** | 139 KB/s | 22 fps |
+
+**MJPEG vs H.264 Comparison:**
+
+| Metric | MJPEG | H.264 | Winner |
+|--------|-------|-------|--------|
+| Time to First Frame | 29-47ms | 57-99ms | MJPEG (faster) |
+| Bandwidth Usage | 4.1 MB/s | 0.14 MB/s | **H.264 (30x less)** |
+| Frame Size | ~164 KB | ~6.5 KB | H.264 (smaller) |
+| Frame Rate | ~25 fps | ~22 fps | Similar |
+
+**When to use each:**
+- **MJPEG**: Lower latency, works everywhere, higher bandwidth
+- **H.264**: Much lower bandwidth, better for remote/slow connections
+
 #### Optimizations Impact
 
 The v0.2.0 latency optimizations contribute:
