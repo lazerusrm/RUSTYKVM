@@ -11,7 +11,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  SIPEED_IMAGE_URL: "https://github.com/sipeed/NanoKVM/releases/download/v1.4.0/20250217_NanoKVM_Rev1_4_0.img.xz"
 
 jobs:
   check:
@@ -140,178 +139,10 @@ jobs:
           path: target/riscv64gc-unknown-linux-musl/release/nanokvm-server
           if-no-files-found: error
 
-  build-firmware:
-    name: Build Firmware Package
-    runs-on: ubuntu-latest
-    needs: build-riscv
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download binary
-        uses: actions/download-artifact@v4
-        with:
-          name: nanokvm-binary
-          path: binary/
-
-      - name: Clone NanoKVM sources for libraries
-        run: |
-          git clone --depth=1 https://github.com/sipeed/NanoKVM ../NanoKVM
-
-      - name: Bootstrap deployment directory
-        run: |
-          chmod +x bootstrap-deploy.sh
-          NANOKVM_PATH=../NanoKVM ./bootstrap-deploy.sh
-
-      - name: Package firmware
-        run: |
-          # Extract version - handle both tags and branch pushes
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/}
-          else
-            VERSION="dev"
-          fi
-
-          # Copy binary
-          mkdir -p deploy/kvmapp/server
-          cp binary/nanokvm-server deploy/kvmapp/server/nanokvm-rs-server
-          chmod +x deploy/kvmapp/server/nanokvm-rs-server
-
-          # Create firmware ZIP
-          cd deploy
-          zip -r ../nanokvm-rs-firmware-${VERSION}.zip kvmapp/
-          cd ..
-
-          # Create SHA256 checksum
-          sha256sum nanokvm-rs-firmware-${VERSION}.zip > nanokvm-rs-firmware-${VERSION}.zip.sha256
-
-          echo "=== Firmware package created ==="
-          ls -lh nanokvm-rs-firmware-*.zip*
-          echo ""
-          echo "Contents:"
-          unzip -l nanokvm-rs-firmware-${VERSION}.zip | tail -30
-
-      - name: Upload firmware artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nanokvm-firmware
-          path: |
-            nanokvm-rs-firmware-*.zip
-            nanokvm-rs-firmware-*.zip.sha256
-          if-no-files-found: error
-
-  build-image:
-    name: Build SD Card Image
-    runs-on: ubuntu-latest
-    needs: build-riscv
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download binary
-        uses: actions/download-artifact@v4
-        with:
-          name: nanokvm-binary
-          path: binary/
-
-      - name: Cache base image
-        uses: actions/cache@v4
-        with:
-          path: /tmp/nanokvm-base.img
-          key: nanokvm-base-v1.4.0
-
-      - name: Download and extract base image
-        run: |
-          if [ ! -f /tmp/nanokvm-base.img ]; then
-            echo "Downloading Sipeed NanoKVM base image..."
-            curl -L -o /tmp/base.img.xz "$SIPEED_IMAGE_URL"
-            echo "Extracting..."
-            xz -d /tmp/base.img.xz
-            mv /tmp/base.img /tmp/nanokvm-base.img
-          else
-            echo "Using cached base image"
-          fi
-
-      - name: Build SD card image
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-
-          # Copy base image
-          cp /tmp/nanokvm-base.img nanokvm-rs.img
-
-          # Setup loop device
-          sudo losetup -fP nanokvm-rs.img
-          LOOP_DEV=$(losetup -j nanokvm-rs.img | cut -d: -f1)
-          echo "Loop device: $LOOP_DEV"
-
-          # Wait for partitions
-          sleep 2
-
-          # Find rootfs partition (usually p2, fallback to p1)
-          if [ -b "${LOOP_DEV}p2" ]; then
-            ROOTFS="${LOOP_DEV}p2"
-          else
-            ROOTFS="${LOOP_DEV}p1"
-          fi
-          echo "Using rootfs partition: $ROOTFS"
-
-          # Mount rootfs
-          sudo mkdir -p /mnt/nanokvm
-          sudo mount "$ROOTFS" /mnt/nanokvm
-
-          # ============================================================
-          # MINIMAL MODIFICATION: Just replace the binary, nothing else
-          # Trust the original init system to work correctly
-          # ============================================================
-
-          echo "=== Original /kvmapp structure ==="
-          ls -la /mnt/nanokvm/kvmapp/ 2>/dev/null || echo "No kvmapp directory"
-          ls -la /mnt/nanokvm/kvmapp/server/ 2>/dev/null || echo "No server directory"
-
-          echo ""
-          echo "=== Replacing NanoKVM-Server binary ==="
-
-          # Backup original binary
-          if [ -f /mnt/nanokvm/kvmapp/server/NanoKVM-Server ]; then
-            echo "Original binary:"
-            ls -la /mnt/nanokvm/kvmapp/server/NanoKVM-Server
-            file /mnt/nanokvm/kvmapp/server/NanoKVM-Server
-            sudo cp /mnt/nanokvm/kvmapp/server/NanoKVM-Server /mnt/nanokvm/kvmapp/server/NanoKVM-Server.go.bak
-          fi
-
-          # Install our Rust binary
-          sudo cp binary/nanokvm-server /mnt/nanokvm/kvmapp/server/NanoKVM-Server
-          sudo chmod +x /mnt/nanokvm/kvmapp/server/NanoKVM-Server
-
-          echo ""
-          echo "=== Installed Rust binary ==="
-          ls -la /mnt/nanokvm/kvmapp/server/NanoKVM-Server
-          file /mnt/nanokvm/kvmapp/server/NanoKVM-Server
-
-          # Version marker
-          echo "NanoKVM-RS ${VERSION}" | sudo tee /mnt/nanokvm/kvmapp/.version-rs
-
-          # Unmount and cleanup
-          sudo sync
-          sudo umount /mnt/nanokvm
-          sudo losetup -d "$LOOP_DEV"
-
-          # Compress
-          xz -9 -k nanokvm-rs.img
-          mv nanokvm-rs.img.xz nanokvm-rs-${VERSION}.img.xz
-          sha256sum nanokvm-rs-${VERSION}.img.xz > nanokvm-rs-${VERSION}.img.xz.sha256
-
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nanokvm-image
-          path: |
-            nanokvm-rs-*.img.xz
-            nanokvm-rs-*.img.xz.sha256
-
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-riscv, build-image, build-firmware]
+    needs: build-riscv
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -324,27 +155,38 @@ jobs:
           name: nanokvm-binary
           path: binary/
 
-      - name: Download image
-        uses: actions/download-artifact@v4
-        with:
-          name: nanokvm-image
-          path: image/
-
-      - name: Download firmware package
-        uses: actions/download-artifact@v4
-        with:
-          name: nanokvm-firmware
-          path: firmware/
-
       - name: Create upgrade package
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
           mkdir -p package
-          cp binary/nanokvm-server package/
-          cp -r web package/ 2>/dev/null || true
-          cp -r dl_lib package/ 2>/dev/null || true
-          cp scripts/install.sh package/ 2>/dev/null || echo '#!/bin/sh' > package/install.sh
-          chmod +x package/install.sh package/nanokvm-server
+          cp binary/nanokvm-server package/NanoKVM-Server
+          chmod +x package/NanoKVM-Server
+
+          # Create simple install script
+          cat > package/install.sh << 'INSTALL'
+          #!/bin/sh
+          set -e
+          echo "Installing NanoKVM-RS..."
+
+          # Stop existing service
+          /etc/init.d/S95nanokvm stop 2>/dev/null || true
+
+          # Backup original
+          if [ -f /kvmapp/server/NanoKVM-Server ]; then
+            cp /kvmapp/server/NanoKVM-Server /kvmapp/server/NanoKVM-Server.bak
+          fi
+
+          # Install new binary
+          cp NanoKVM-Server /kvmapp/server/NanoKVM-Server
+          chmod +x /kvmapp/server/NanoKVM-Server
+
+          # Start service
+          /etc/init.d/S95nanokvm start
+
+          echo "Done! NanoKVM-RS installed."
+          INSTALL
+          chmod +x package/install.sh
+
           cd package
           tar -czvf ../nanokvm-rs-${VERSION}-upgrade.tar.gz .
           cd ..
@@ -354,10 +196,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            image/nanokvm-rs-*.img.xz
-            image/nanokvm-rs-*.img.xz.sha256
-            firmware/nanokvm-rs-firmware-*.zip
-            firmware/nanokvm-rs-firmware-*.zip.sha256
             nanokvm-rs-*-upgrade.tar.gz
             nanokvm-rs-*-upgrade.tar.gz.sha256
           generate_release_notes: true
@@ -366,35 +204,29 @@ jobs:
           body: |
             ## NanoKVM-RS ${{ github.ref_name }}
 
-            A complete Rust rewrite of the NanoKVM server with improved performance and security.
+            High-performance Rust rewrite of the NanoKVM server.
 
-            ### Downloads
+            ### Performance vs Go Version
 
-            | File | Description |
-            |------|-------------|
-            | `nanokvm-rs-${{ github.ref_name }}.img.xz` | **Full SD card image** - Flash directly to microSD |
-            | `nanokvm-rs-${{ github.ref_name }}-upgrade.tar.gz` | Upgrade package for existing installations |
+            | Metric | Go | Rust | Improvement |
+            |--------|-----|------|-------------|
+            | Input Latency | 30-80ms | 13-16ms | 3-4x faster |
+            | Video TTFB | ~50ms | 29-47ms | ~40% faster |
+            | RAM Usage | 24 MB | 14.5 MB | 40% less |
 
-            ### Quick Start (New Installation)
-
-            1. Download `nanokvm-rs-${{ github.ref_name }}.img.xz`
-            2. Flash to microSD using [Rufus](https://rufus.ie/), [balenaEtcher](https://etcher.balena.io/), or [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
-            3. Insert SD card into NanoKVM and power on
-            4. Access web interface at `https://<device-ip>`
-
-            ### Upgrade Existing Installation
+            ### Installation
 
             ```bash
-            scp nanokvm-rs-*-upgrade.tar.gz root@<nanokvm-ip>:/tmp/
+            # Upload to device
+            scp nanokvm-rs-${{ github.ref_name }}-upgrade.tar.gz root@<nanokvm-ip>:/tmp/
+
+            # Install
             ssh root@<nanokvm-ip> "cd /tmp && tar -xzf nanokvm-rs-*-upgrade.tar.gz && ./install.sh"
             ```
 
-            ### Highlights
+            ### Key Features
 
-            - **73% less memory** usage vs Go version
-            - **5x faster** startup time
-            - **Zero-copy** video pipeline
-            - Hardware-accelerated H.264 via WebRTC
-            - Tailscale VPN integration
-            - Passkey/WebAuthn authentication
-            - SD card health monitoring
+            - Lazy hardware initialization (no crash without HDMI)
+            - TCP_NODELAY for lower latency
+            - Reduced memory footprint
+            - H.264 hardware encoding via WebRTC

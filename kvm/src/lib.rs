@@ -98,7 +98,11 @@ impl Drop for KvmFrame {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             let mut p = self.ptr;
-            tracing::debug!("KvmFrame::drop() - freeing buffer at {:p}, len={}", self.ptr, self.len);
+            tracing::debug!(
+                "KvmFrame::drop() - freeing buffer at {:p}, len={}",
+                self.ptr,
+                self.len
+            );
             kvm_sys::free_kvmv_data(&mut p);
         } else {
             tracing::debug!("KvmFrame::drop() - ptr was null, skipping free");

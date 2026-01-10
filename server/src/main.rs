@@ -516,7 +516,10 @@ async fn main() {
                 let listener = create_optimized_listener(http_addr)
                     .await
                     .expect("HTTP bind failed");
-                info!("Server listening on {} (HTTP - TLS fallback, TCP_NODELAY enabled)", http_addr);
+                info!(
+                    "Server listening on {} (HTTP - TLS fallback, TCP_NODELAY enabled)",
+                    http_addr
+                );
                 axum::serve(listener, app)
                     .with_graceful_shutdown(shutdown_signal())
                     .await
@@ -571,7 +574,10 @@ async fn main() {
         let listener = create_optimized_listener(http_addr)
             .await
             .expect("HTTP bind failed");
-        info!("Server listening on {} (HTTP, TCP_NODELAY enabled)", http_addr);
+        info!(
+            "Server listening on {} (HTTP, TCP_NODELAY enabled)",
+            http_addr
+        );
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal())
             .await
@@ -673,9 +679,9 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
                 Ok(Err(e)) => {
                     // Log KVM errors (but not too frequently for expected conditions)
                     match &e {
-                        kvm::KvmError::NotExist => {}        // Frame not ready, normal
-                        kvm::KvmError::Retrieving => {}      // Still retrieving, normal
-                        kvm::KvmError::NotInitialized => {}  // No HDMI, will retry
+                        kvm::KvmError::NotExist => {}         // Frame not ready, normal
+                        kvm::KvmError::Retrieving => {}       // Still retrieving, normal
+                        kvm::KvmError::NotInitialized => {}   // No HDMI, will retry
                         kvm::KvmError::LibraryNotLoaded => {} // No libkvm.so
                         _ => tracing::warn!("MJPEG capture error: {}", e),
                     }
@@ -801,7 +807,11 @@ async fn handle_h264_direct(mut socket: WebSocket, state: Arc<AppState>) {
         buf.put_u8(if f.is_keyframe { 1 } else { 0 });
         buf.put_u64_le(f.timestamp);
         buf.put_slice(&f.raw_data);
-        if socket.send(Message::Binary(buf.freeze().into())).await.is_err() {
+        if socket
+            .send(Message::Binary(buf.freeze().into()))
+            .await
+            .is_err()
+        {
             break;
         }
     }
