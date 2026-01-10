@@ -47,6 +47,7 @@ impl AsRef<[u8]> for KvmFrame {
 
 impl KvmFrame {
     fn new(ptr: *mut u8, len: usize) -> Self {
+        tracing::debug!("KvmFrame::new() - created buffer at {:p}, len={}", ptr, len);
         Self { ptr, len }
     }
 
@@ -62,21 +63,21 @@ impl KvmFrame {
         self.len == 0
     }
 
-    /// Converts the frame into a `Bytes` object with TRUE ZERO-COPY.
+    /// Converts the frame into a `Bytes` object.
     ///
-    /// Uses `Bytes::from_owner` to wrap the hardware buffer directly.
-    /// When all `Bytes` clones are dropped, the `KvmFrame` Drop impl
-    /// is called, which frees the hardware buffer via `free_kvmv_data`.
+    /// NOTE: This currently uses copy_from_slice because Bytes::from_owner()
+    /// has issues with hardware buffer lifetime management on this platform.
+    /// The zero-copy approach caused buffer exhaustion (-3 errors) because
+    /// the hardware buffers weren't being freed properly when Bytes was dropped.
     ///
-    /// # Performance
-    /// - Zero memory copies (previously copied 161KB+ per frame)
-    /// - At 25fps, saves ~4MB/s of memory bandwidth
-    /// - Reduces CPU usage and latency
+    /// TODO: Investigate why from_owner() doesn't call Drop correctly and fix.
     #[inline]
     pub fn into_bytes(self) -> Bytes {
-        // from_owner takes ownership of self and uses AsRef<[u8]> to get the slice.
-        // When all Bytes clones are dropped, self is dropped, calling free_kvmv_data.
-        Bytes::from_owner(self)
+        // Copy the data - this ensures the hardware buffer is freed immediately
+        // when this KvmFrame is dropped at the end of this function.
+        let slice = unsafe { std::slice::from_raw_parts(self.ptr, self.len) };
+        Bytes::copy_from_slice(slice)
+        // self is dropped here, calling free_kvmv_data via Drop impl
     }
 
     /// Returns a slice reference to the frame data (for use without consuming)
@@ -97,7 +98,10 @@ impl Drop for KvmFrame {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             let mut p = self.ptr;
+            tracing::debug!("KvmFrame::drop() - freeing buffer at {:p}, len={}", self.ptr, self.len);
             kvm_sys::free_kvmv_data(&mut p);
+        } else {
+            tracing::debug!("KvmFrame::drop() - ptr was null, skipping free");
         }
     }
 }
