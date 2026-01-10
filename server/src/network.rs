@@ -133,3 +133,37 @@ pub async fn disconnect_wifi_handler() -> impl IntoResponse {
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
+
+// --- Ethernet Handlers ---
+
+#[cfg(target_os = "linux")]
+pub async fn get_ethernet_config_handler() -> impl IntoResponse {
+    let saved = NetworkManager::read_saved_config().await;
+    let current = NetworkManager::get_current_config().await;
+
+    Json(network::GetEthernetConfigRsp {
+        config: saved,
+        current,
+    })
+    .into_response()
+}
+
+#[cfg(target_os = "linux")]
+pub async fn set_ethernet_config_handler(
+    Json(req): Json<network::SetEthernetConfigReq>,
+) -> impl IntoResponse {
+    match NetworkManager::set_ethernet_config(req).await {
+        Ok(_) => {
+            tracing::info!("Ethernet configuration updated");
+            StatusCode::OK.into_response()
+        }
+        Err(e) => {
+            error!("Failed to set ethernet config: {}", e);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}

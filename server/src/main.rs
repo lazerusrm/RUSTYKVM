@@ -78,6 +78,9 @@ use crate::network::{
     connect_wifi_handler, delete_wol_mac_handler, disconnect_wifi_handler, get_wifi_handler,
     get_wol_macs_handler, set_wol_name_handler, wol_handler,
 };
+
+#[cfg(target_os = "linux")]
+use crate::network::{get_ethernet_config_handler, set_ethernet_config_handler};
 use crate::passkey::handlers::{
     enroll_complete_handler, login_challenge_handler, login_verify_handler, passkey_setup_handler,
     passkey_status_handler, qr_code_handler, recover_handler, recovery_download_handler,
@@ -92,9 +95,10 @@ use crate::storage_health::{
 };
 #[cfg(target_os = "linux")]
 use crate::tailscale::{
-    tailscale_down_handler, tailscale_install_handler, tailscale_login_handler,
-    tailscale_logout_handler, tailscale_start_handler, tailscale_status_handler,
-    tailscale_stop_handler, tailscale_uninstall_handler, tailscale_up_handler,
+    get_auto_update_handler, set_auto_update_handler, tailscale_down_handler,
+    tailscale_install_handler, tailscale_login_handler, tailscale_logout_handler,
+    tailscale_start_handler, tailscale_status_handler, tailscale_stop_handler,
+    tailscale_uninstall_handler, tailscale_up_handler,
 };
 #[cfg(not(target_os = "linux"))]
 use crate::vm::{
@@ -370,6 +374,14 @@ async fn main() {
 
     #[cfg(target_os = "linux")]
     {
+        api_routes = api_routes.route(
+            "/network/ethernet",
+            get(get_ethernet_config_handler).post(set_ethernet_config_handler),
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    {
         api_routes = api_routes
             .route("/stream/mjpeg/detect", post(update_frame_detect_handler))
             .route("/stream/mjpeg/detect/stop", post(stop_frame_detect_handler));
@@ -425,7 +437,11 @@ async fn main() {
             .route("/tailscale/login", post(tailscale_login_handler))
             .route("/tailscale/up", post(tailscale_up_handler))
             .route("/tailscale/down", post(tailscale_down_handler))
-            .route("/tailscale/logout", post(tailscale_logout_handler));
+            .route("/tailscale/logout", post(tailscale_logout_handler))
+            .route(
+                "/tailscale/auto-update",
+                get(get_auto_update_handler).post(set_auto_update_handler),
+            );
     }
 
     let api_routes = api_routes

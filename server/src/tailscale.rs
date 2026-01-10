@@ -301,3 +301,127 @@ async fn perform_tailscale_install() -> anyhow::Result<()> {
     info!("Tailscale installed successfully");
     Ok(())
 }
+
+// ============================================================================
+// Tailscale Auto-Update Feature
+// ============================================================================
+
+/// Response from tailscale debug prefs command
+#[derive(Deserialize)]
+struct TsPrefs {
+    #[serde(rename = "AutoUpdate")]
+    auto_update: Option<TsAutoUpdate>,
+}
+
+#[derive(Deserialize)]
+struct TsAutoUpdate {
+    #[serde(rename = "Apply")]
+    apply: Option<bool>,
+}
+
+/// Request/Response structures for auto-update API
+#[derive(Debug, Serialize)]
+pub struct GetAutoUpdateRsp {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetAutoUpdateReq {
+    pub enabled: bool,
+}
+
+/// Helper function to check if Tailscale is installed
+fn is_tailscale_installed() -> bool {
+    std::path::Path::new(TAILSCALE_PATH).exists()
+}
+
+/// Get auto-update status from tailscale debug prefs
+async fn get_tailscale_auto_update() -> Result<bool, String> {
+    let output = Command::new("tailscale")
+        .args(["debug", "prefs"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to execute tailscale: {}", e))?;
+
+    if !output.status.success() {
+        return Err("tailscale command failed".to_string());
+    }
+
+    // Parse JSON output
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    let prefs: TsPrefs =
+        serde_json::from_str(&json_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
+
+    // Extract AutoUpdate.Apply field
+    Ok(prefs.auto_update.and_then(|au| au.apply).unwrap_or(false))
+}
+
+/// Set auto-update status
+async fn set_tailscale_auto_update(enabled: bool) -> Result<(), String> {
+    let arg = if enabled { "true" } else { "false" };
+    let cmd = format!("tailscale set --auto-update={}", arg);
+
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .status()
+        .await
+        .map_err(|e| format!("Failed to execute command: {}", e))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Failed to set auto-update: command '{}'returned error",
+            cmd
+        ))
+    }
+}
+
+/// HTTP handler to get auto-update status
+#[cfg(target_os = "linux")]
+pub async fn get_auto_update_handler() -> impl IntoResponse {
+    // Check if Tailscale is installed
+    if !is_tailscale_installed() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Tailscale not installed"})),
+        )
+            .into_response();
+    }
+
+    match get_tailscale_auto_update().await {
+        Ok(enabled) => {
+            info!("Tailscale auto-update status retrieved: {}", enabled);
+            Json(GetAutoUpdateRsp { enabled }).into_response()
+        }
+        Err(e) => {
+            error!("Failed to get auto-update status: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// HTTP handler to set auto-update status
+#[cfg(target_os = "linux")]
+pub async fn set_auto_update_handler(Json(req): Json<SetAutoUpdateReq>) -> impl IntoResponse {
+    // Check if Tailscale is installed
+    if !is_tailscale_installed() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Tailscale not installed"})),
+        )
+            .into_response();
+    }
+
+    match set_tailscale_auto_update(req.enabled).await {
+        Ok(_) => {
+            info!("Tailscale auto-update set to: {}", req.enabled);
+            StatusCode::OK.into_response()
+        }
+        Err(e) => {
+            error!("Failed to set auto-update: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}

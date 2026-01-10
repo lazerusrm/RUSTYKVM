@@ -1903,6 +1903,7 @@ dependencies = [
  "once_cell",
  "regex",
  "serde",
+ "serde_yaml",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
