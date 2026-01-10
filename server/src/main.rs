@@ -168,6 +168,15 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() {
+    // Initialize rustls crypto provider for HTTPS support
+    #[cfg(target_os = "linux")]
+    {
+        use rustls::crypto::CryptoProvider;
+        let _ = CryptoProvider::install_default(
+            rustls::crypto::ring::default_provider(),
+        );
+    }
+
     // Create shutdown broadcast channel
     let (_shutdown_tx, _) = broadcast::channel::<()>(1);
 
