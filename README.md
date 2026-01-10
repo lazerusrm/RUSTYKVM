@@ -48,6 +48,128 @@ API Endpoints:
 | `POST /api/tailscale/up` | Connect to tailnet |
 | `POST /api/tailscale/down` | Disconnect from tailnet |
 | `GET /api/tailscale/status` | Get connection status |
+| `GET/POST /api/tailscale/auto-update` | Manage automatic Tailscale updates |
+
+#### Tailscale Auto-Update
+
+Enable or disable automatic Tailscale updates via the NanoKVM web interface:
+
+**Get current auto-update status:**
+```bash
+curl https://<device-ip>/api/tailscale/auto-update
+# Response: {"enabled": true}
+```
+
+**Enable auto-update:**
+```bash
+curl -X POST https://<device-ip>/api/tailscale/auto-update \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+```
+
+**Disable auto-update:**
+```bash
+curl -X POST https://<device-ip>/api/tailscale/auto-update \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+```
+
+**Features:**
+- Automatic updates keep Tailscale client synchronized with latest security patches
+- Settings persist across device reboots
+- Disabled by default - explicitly enable to auto-update
+- Available only when Tailscale is installed on the device
+
+**Note:** This feature requires Tailscale to be installed and connected. Returns HTTP 503 if Tailscale is not available.
+
+### Ethernet Network Configuration
+
+Flexible network configuration supporting both DHCP and static IP modes with DNS management:
+
+**Get current and saved network configuration:**
+```bash
+curl https://<device-ip>/api/network/ethernet
+# Response example:
+# {
+#   "config": {
+#     "dhcp": false,
+#     "ip": "192.168.1.100",
+#     "netmask": "255.255.255.0",
+#     "gateway": "192.168.1.1",
+#     "dns1": "8.8.8.8",
+#     "dns2": "8.8.4.4"
+#   },
+#   "current": {
+#     "dhcp": true,
+#     "ip": "192.168.1.50",
+#     "netmask": "255.255.255.0",
+#     "gateway": "192.168.1.1",
+#     "dns1": "192.168.1.1",
+#     "dns2": null
+#   }
+# }
+```
+
+**Enable DHCP mode:**
+```bash
+curl -X POST https://<device-ip>/api/network/ethernet \
+  -H "Content-Type: application/json" \
+  -d '{"dhcp": true}'
+```
+
+**Configure static IP:**
+```bash
+curl -X POST https://<device-ip>/api/network/ethernet \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dhcp": false,
+    "ip": "192.168.1.100",
+    "netmask": "255.255.255.0",
+    "gateway": "192.168.1.1",
+    "dns1": "8.8.8.8",
+    "dns2": "8.8.4.4"
+  }'
+```
+
+**Configuration Details:**
+
+| Field | Required | Format | Example |
+|-------|----------|--------|---------|
+| `dhcp` | Yes | boolean | `true` or `false` |
+| `ip` | Static only | IPv4 address | `192.168.1.100` |
+| `netmask` | Static only | Dotted decimal | `255.255.255.0` |
+| `gateway` | Static only | IPv4 address | `192.168.1.1` |
+| `dns1` | Optional | IPv4 address | `8.8.8.8` |
+| `dns2` | Optional | IPv4 address | `8.8.4.4` |
+
+**Features:**
+- **DHCP Mode**: Automatic IP configuration from network DHCP server (recommended for most users)
+- **Static IP Mode**: Manual IP configuration for fixed network presence (useful for servers)
+- **DNS Configuration**: Override DHCP DNS servers with custom nameservers
+- **Configuration Persistence**: Settings saved to `/etc/kvm/ethernet.yaml` and survive reboots
+- **Input Validation**: All IP addresses, netmasks, and gateways are validated before application
+- **Async Network Restart**: 500ms delay before network restart to allow API response to complete
+
+**Validation Rules:**
+- IP addresses must be valid IPv4 format (e.g., 192.168.1.100)
+- Netmask must be a valid CIDR netmask in dotted decimal format
+  - Valid: `255.255.255.0` (continuous 1-bits followed by 0-bits)
+  - Invalid: `255.255.255.1` (non-continuous bit pattern)
+- Gateway must be reachable on the configured subnet
+- DNS servers are optional but must be valid IPv4 addresses if provided
+
+**Implementation Details:**
+- Saves configuration to `/boot/eth.nodhcp` (static IP marker file in CIDR format: `IP/PREFIX gateway`)
+- Saves persistent config to `/etc/kvm/ethernet.yaml` (YAML format)
+- Updates `/etc/resolv.conf` with DNS nameservers
+- Executes `/etc/init.d/S30eth` to restart network service
+- Returns HTTP 400 with error details if validation fails
+
+**Troubleshooting:**
+- If network becomes unreachable after static IP configuration, revert to DHCP and reconfigure
+- DNS issues: Verify nameservers with `cat /etc/resolv.conf` on device
+- Network not restarting: Check `/var/log/nanokvm_auth.log` for error details
+- Configuration not persisting: Verify `/etc/kvm/` directory exists and has write permissions
 
 ### Passkey Authentication (WebAuthn)
 
