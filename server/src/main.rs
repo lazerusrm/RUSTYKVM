@@ -33,6 +33,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
@@ -111,6 +112,22 @@ fn bind_addr(port: u16) -> SocketAddr {
     })
 }
 
+/// Create a TCP listener with optimized settings for low latency
+/// - TCP_NODELAY: Disable Nagle's algorithm for immediate packet sending
+/// - SO_REUSEADDR: Allow quick rebinding after restart
+async fn create_optimized_listener(addr: SocketAddr) -> std::io::Result<TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    socket.set_nodelay(true)?; // TCP_NODELAY on listener (inherited by some systems)
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+
+    TcpListener::from_std(socket.into())
+}
+
 // Shared application state
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
@@ -175,10 +192,11 @@ async fn main() {
     #[cfg(not(target_os = "linux"))]
     let hid_engine = Arc::new(Mutex::new(::hid::HidEngine::new().await));
 
-    // Create Broadcast Channels
-    let (tx_mjpeg, _rx) = broadcast::channel::<Bytes>(16);
-    let (tx_h264, _rx) = broadcast::channel::<H264Frame>(16);
-    let (tx_audio, _rx) = broadcast::channel::<Bytes>(16);
+    // Create Broadcast Channels - reduced buffer size for lower latency
+    // Smaller buffers (4 vs 16) reduce frame queuing delay at cost of potential drops under load
+    let (tx_mjpeg, _rx) = broadcast::channel::<Bytes>(4);
+    let (tx_h264, _rx) = broadcast::channel::<H264Frame>(4);
+    let (tx_audio, _rx) = broadcast::channel::<Bytes>(4);
 
     // Initialize WebRTC
     let mut webrtc_config_builder = WebRtcConfig::builder();
@@ -495,10 +513,10 @@ async fn main() {
                 error!("Falling back to HTTP mode. To use HTTPS, ensure certificate files exist.");
                 // Fall through to HTTP mode
                 let http_addr = bind_addr(config.port.http);
-                let listener = tokio::net::TcpListener::bind(&http_addr)
+                let listener = create_optimized_listener(http_addr)
                     .await
                     .expect("HTTP bind failed");
-                info!("Server listening on {} (HTTP - TLS fallback)", http_addr);
+                info!("Server listening on {} (HTTP - TLS fallback, TCP_NODELAY enabled)", http_addr);
                 axum::serve(listener, app)
                     .with_graceful_shutdown(shutdown_signal())
                     .await
@@ -528,7 +546,7 @@ async fn main() {
 
         info!("Starting HTTP redirector on {}", http_addr);
         tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(&http_addr)
+            let listener = create_optimized_listener(http_addr)
                 .await
                 .expect("HTTP bind failed");
             axum::serve(listener, redirect_app)
@@ -550,10 +568,10 @@ async fn main() {
             .expect("HTTPS server failed");
     } else {
         let http_addr = bind_addr(config.port.http);
-        let listener = tokio::net::TcpListener::bind(&http_addr)
+        let listener = create_optimized_listener(http_addr)
             .await
             .expect("HTTP bind failed");
-        info!("Server listening on {} (HTTP)", http_addr);
+        info!("Server listening on {} (HTTP, TCP_NODELAY enabled)", http_addr);
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal())
             .await
@@ -727,19 +745,28 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
 }
 
 async fn mjpeg_stream(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    use bytes::BufMut;
+
     let rx = state.tx_mjpeg.subscribe();
     let s = BroadcastStream::new(rx)
         .filter_map(|r| async move { r.ok() })
         .map(|f| {
-            let h = format!(
-                "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-                f.len()
-            );
-            let mut m = Vec::with_capacity(h.len() + f.len() + 2);
-            m.extend_from_slice(h.as_bytes());
-            m.extend_from_slice(&f);
-            m.extend_from_slice(b"\r\n");
-            Ok::<Bytes, axum::Error>(Bytes::from(m))
+            // Optimized frame construction using BytesMut to minimize allocations
+            // Header is ~60 bytes, frame is ~160KB, so pre-allocate slightly over
+            let header_estimate = 70;
+            let mut buf = bytes::BytesMut::with_capacity(header_estimate + f.len() + 2);
+
+            // Write header directly without format! allocation
+            buf.put_slice(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ");
+            // Write length as ASCII digits using itoa::Buffer (fast integer formatting)
+            let mut itoa_buf = itoa::Buffer::new();
+            let len_str = itoa_buf.format(f.len());
+            buf.put_slice(len_str.as_bytes());
+            buf.put_slice(b"\r\n\r\n");
+            buf.put_slice(&f);
+            buf.put_slice(b"\r\n");
+
+            Ok::<Bytes, axum::Error>(buf.freeze())
         });
     (
         [
@@ -763,13 +790,16 @@ async fn h264_direct_handler(
 }
 
 async fn handle_h264_direct(mut socket: WebSocket, state: Arc<AppState>) {
+    use bytes::BufMut;
+
     let mut rx = state.tx_h264.subscribe();
     while let Ok(f) = rx.recv().await {
-        let mut m = Vec::with_capacity(9 + f.raw_data.len());
-        m.push(if f.is_keyframe { 1 } else { 0 });
-        m.extend_from_slice(&f.timestamp.to_le_bytes());
-        m.extend_from_slice(&f.raw_data);
-        if socket.send(Message::Binary(m.into())).await.is_err() {
+        // Optimized: use BytesMut with exact capacity
+        let mut buf = bytes::BytesMut::with_capacity(9 + f.raw_data.len());
+        buf.put_u8(if f.is_keyframe { 1 } else { 0 });
+        buf.put_u64_le(f.timestamp);
+        buf.put_slice(&f.raw_data);
+        if socket.send(Message::Binary(buf.freeze().into())).await.is_err() {
             break;
         }
     }

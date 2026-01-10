@@ -38,7 +38,8 @@ pub struct HidEngine {
 const HID_KEYBOARD: &str = "/dev/hidg0";
 const HID_MOUSE_REL: &str = "/dev/hidg1";
 const HID_MOUSE_ABS: &str = "/dev/hidg2";
-const WRITE_TIMEOUT: Duration = Duration::from_millis(10); // 8ms in Go, let's allow 10ms
+// Reduced from 10ms to 5ms for lower input latency - USB HID writes are typically <1ms
+const WRITE_TIMEOUT: Duration = Duration::from_millis(5);
 
 impl HidEngine {
     pub async fn new() -> Self {

@@ -66,6 +66,8 @@ once_cell = "1.19"
 regex = "1.10"
 qrcode = "0.14"
 byteorder = "1.5"
+socket2 = "0.5"
+itoa = "1.0"
 
 # Platform-specific dependencies
 [target.'cfg(target_os = "linux")'.dependencies]

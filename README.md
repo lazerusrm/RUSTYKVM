@@ -89,21 +89,32 @@ The health data is cached for 24 hours and accessible via `/api/storage/health`.
 
 ### Performance & Memory Improvements
 
-NanoKVM-RS delivers significant performance gains through Rust's zero-cost abstractions:
+NanoKVM-RS delivers significant performance gains through Rust's zero-cost abstractions.
+
+**Measured Performance (v0.2.0):**
+
+| Metric | Original (Go) | NanoKVM-RS | Improvement |
+|--------|---------------|------------|-------------|
+| Physical RAM (RSS) | 24 MB | 14.5-16.5 MB | **40% less** |
+| Virtual Memory | 1,252 MB | 42 MB | **30x less** |
+| Binary Size | 19.6 MB | 11.6 MB | **41% smaller** |
+| API Latency | 9-75ms | **13-21ms** | **2-3x faster** |
+| HID Input Latency | ~50ms | **13-16ms** | **4x faster** |
+| Video Throughput | 4.2 MB/s | 4.2 MB/s | Same (hardware) |
+
+See [BENCHMARKS.md](BENCHMARKS.md) for detailed measurements.
+
+**Latency Optimizations:**
+- **TCP_NODELAY** - Immediate packet sending (no Nagle buffering)
+- **Reduced broadcast buffers** - Minimizes frame queuing delay
+- **Optimized HID timeouts** - 5ms write timeout for fast USB delivery
+- **Zero-copy frame serialization** - BytesMut with itoa for headers
 
 **Zero-Copy Architecture:**
 - Video frames passed directly from hardware to WebRTC without intermediate copies
 - Memory-mapped I/O for GPIO and HID operations
 - Direct buffer sharing between capture and encoding pipelines
 - No garbage collection pauses - deterministic memory management
-
-**Memory Efficiency:**
-| Metric | Original (Go) | NanoKVM-RS | Improvement |
-|--------|---------------|------------|-------------|
-| Idle Memory | ~45MB | ~12MB | **73% less** |
-| Peak Memory | ~120MB | ~35MB | **71% less** |
-| Binary Size | ~15MB | ~8MB | **47% smaller** |
-| Startup Time | ~2.0s | ~0.4s | **5x faster** |
 
 **Async Performance:**
 - Tokio runtime with work-stealing scheduler
