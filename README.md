@@ -224,9 +224,11 @@ nanokvm-rs/
 | `/api/hid/keyboard` | POST | Send keyboard input |
 | `/api/hid/mouse` | POST | Send mouse input |
 | `/api/vm/gpio/*` | GET/POST | GPIO control |
+| `/api/vm/tailscale/auto-update` | GET/POST | Tailscale auto-update toggle |
 | `/api/storage/iso` | GET/POST | ISO management |
 | `/api/storage/health` | GET | SD card health status |
 | `/api/tailscale/*` | Various | Tailscale VPN management |
+| `/api/network/ethernet` | GET/POST | Ethernet configuration (DHCP/static IP) |
 | `/api/terminal` | WS | PTY terminal WebSocket |
 | `/health` | GET | Health check (no auth) |
 
