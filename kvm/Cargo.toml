@@ -8,4 +8,4 @@ kvm-sys = { path = "../kvm-sys" }
 thiserror = "2.0"
 tracing = "0.1"
 parking_lot = "0.12"
-bytes = "1.1"
+bytes = "1.9"

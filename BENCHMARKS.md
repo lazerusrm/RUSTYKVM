@@ -340,4 +340,49 @@ The NanoKVM-RS Rust port delivers production-ready performance with **40% less R
 3. **Reduced HID timeout** (10ms→5ms) - Faster USB HID report delivery
 4. **Optimized frame serialization** - BytesMut + itoa for zero-copy headers
 
+### Zero-Copy Frame Handling (v0.3.0)
+
+**Implementation Complete** - True zero-copy video frame handling using `Bytes::from_owner()`.
+
+#### What Changed
+The previous implementation copied each video frame from the hardware buffer:
+```rust
+// OLD: Copied ~164KB per frame
+pub fn into_bytes(self) -> Bytes {
+    Bytes::copy_from_slice(self.as_slice())  // 164KB memcpy!
+}
+```
+
+The new implementation wraps the hardware buffer directly with zero copies:
+```rust
+// NEW: Zero-copy - wraps hardware buffer directly
+impl AsRef<[u8]> for KvmFrame {
+    fn as_ref(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+pub fn into_bytes(self) -> Bytes {
+    Bytes::from_owner(self)  // Zero-copy! Frame freed on drop
+}
+```
+
+#### Expected Benefits
+- **Eliminates ~164KB memcpy per frame** (~4MB/s memory bandwidth saved)
+- **Lower CPU cache pressure** - No redundant data copying
+- **Better concurrent performance** - Less memory bus contention
+- **Reduced latency variance** - More predictable frame timing
+- **Memory bandwidth savings** - ~4MB/s at 25fps @ 1080p
+
+#### Technical Details
+- Uses `bytes` crate v1.9+ `Bytes::from_owner()` API
+- `KvmFrame` implements `AsRef<[u8]>` for slice access
+- Hardware buffer freed via `free_kvmv_data()` when all `Bytes` clones are dropped
+- RAII pattern ensures no memory leaks
+
+#### Status
+- ✅ Implementation complete and compiles
+- ✅ Binary deployed and running on device
+- ⏳ Benchmark pending (requires active HDMI signal for video capture)
+
 The Rust implementation is production-ready with significantly lower resource usage and latency, making it ideal for the memory-constrained NanoKVM hardware (158 MB total RAM).
