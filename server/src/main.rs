@@ -429,14 +429,13 @@ async fn main() {
                 get(get_autostart_content_handler)
                     .post(upload_autostart_handler)
                     .delete(delete_autostart_handler),
-            )
+                )
             .route("/vm/tls", post(set_tls_handler))
             .route("/vm/hdmi", get(get_hdmi_state_handler))
             .route("/vm/hdmi/reset", post(reset_hdmi_handler))
             .route("/vm/hdmi/enable", post(enable_hdmi_handler))
-.route("/vm/hdmi/disable", post(disable_hdmi_handler))
-.route("/vm/screen", get(get_screen_handler).post(set_screen_handler))
-.route("/vm/reboot", post(reboot_handler))
+            .route("/vm/hdmi/disable", post(disable_hdmi_handler))
+            .route("/vm/reboot", post(reboot_handler))
             .route("/tailscale/install", post(tailscale_install_handler))
             .route("/tailscale/uninstall", post(tailscale_uninstall_handler))
             .route("/tailscale/start", post(tailscale_start_handler))
@@ -838,11 +837,7 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
                     if !parameter_sets_initialized {
                         let (sps, pps) = extract_h264_parameter_sets(&frame_data);
                         if let (Some(sps_data), Some(pps_data)) = (sps, pps) {
-                            info!(
-                                "H.264 parameter sets extracted: SPS {} bytes, PPS {} bytes",
-                                sps_data.len(),
-                                pps_data.len()
-                            );
+                            info!("H.264 parameter sets extracted: SPS {} bytes, PPS {} bytes", sps_data.len(), pps_data.len());
                             state.webrtc.update_h264_parameter_sets("default", sps_data, pps_data);
                             parameter_sets_initialized = true;
                         } else {
