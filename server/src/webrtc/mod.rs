@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub mod screen;
 pub mod transport;
 pub mod ws_signaling;

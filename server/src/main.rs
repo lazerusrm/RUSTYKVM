@@ -45,7 +45,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{debug, error, info, warn};
 
 #[cfg(target_os = "linux")]
-use crate::webrtc::screen::{stop_frame_detect_handler, update_frame_detect_handler};
+use crate::webrtc::screen::{get_screen_handler, set_screen_handler, stop_frame_detect_handler, update_frame_detect_handler};
 
 #[cfg(target_os = "linux")]
 use crate::vm::{
@@ -434,9 +434,9 @@ async fn main() {
             .route("/vm/hdmi", get(get_hdmi_state_handler))
             .route("/vm/hdmi/reset", post(reset_hdmi_handler))
             .route("/vm/hdmi/enable", post(enable_hdmi_handler))
-            .route("/vm/hdmi/disable", post(disable_hdmi_handler))
-            .route("/vm/screen", post(set_screen_handler))
-            .route("/vm/reboot", post(reboot_handler))
+.route("/vm/hdmi/disable", post(disable_hdmi_handler))
+.route("/vm/screen", get(get_screen_handler).post(set_screen_handler))
+.route("/vm/reboot", post(reboot_handler))
             .route("/tailscale/install", post(tailscale_install_handler))
             .route("/tailscale/uninstall", post(tailscale_uninstall_handler))
             .route("/tailscale/start", post(tailscale_start_handler))
@@ -466,8 +466,19 @@ async fn main() {
         ));
 
     let app = Router::new()
-        .route("/health", get(health_check_handler))
-        .route("/api/login", post(login_handler))
+         .route("/health", get(health_check_handler))
+         .route("/api/system/capabilities", get(capabilities_handler))
+         // Aliases for /api/vm/* to /vm/* for Go frontend compatibility
+         .route("/api/vm/screen", get(get_screen_handler).post(set_screen_handler))
+         .route("/api/vm/info", get(get_info_handler))
+         .route("/api/vm/oled", get(get_oled_handler).post(set_oled_handler))
+         .route("/api/vm/terminal", get(terminal_handler))
+         // Aliases for /api/stream/* to /stream/* for Go frontend compatibility
+         .route("/api/stream/h264", get(h264_ws_handler))
+         .route("/api/stream/h264/direct", get(h264_direct_handler))
+         .route("/api/login", post(login_handler))
+         .route("/api/logout", post(logout_handler))
+         .route("/api/auth/login", post(login_handler))
         .route("/api/logout", post(logout_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/account", get(get_account_handler))
@@ -723,6 +734,60 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
     }
 }
 
+/// Extract SPS and PPS NAL units from H.264 Annex B stream
+/// Returns (SPS, PPS) as Bytes if found
+fn extract_h264_parameter_sets(data: &[u8]) -> (Option<Bytes>, Option<Bytes>) {
+    let mut sps = None;
+    let mut pps = None;
+    let mut i = 0;
+
+    while i < data.len() {
+        // Find start code (00 00 01 or 00 00 00 01)
+        if i + 3 < data.len() && data[i] == 0 && data[i + 1] == 0 {
+            let (start_code_len, nal_start) = if data[i + 2] == 1 {
+                (3, i + 3)
+            } else if i + 4 < data.len() && data[i + 2] == 0 && data[i + 3] == 1 {
+                (4, i + 4)
+            } else {
+                i += 1;
+                continue;
+            };
+
+            if nal_start >= data.len() {
+                break;
+            }
+
+            // Find end of this NAL unit (next start code or end of data)
+            let mut nal_end = data.len();
+            for j in nal_start..data.len() - 2 {
+                if data[j] == 0 && data[j + 1] == 0 && (data[j + 2] == 1 || (j + 3 < data.len() && data[j + 2] == 0 && data[j + 3] == 1)) {
+                    nal_end = j;
+                    break;
+                }
+            }
+
+            let nal_type = data[nal_start] & 0x1F;
+            match nal_type {
+                7 => {
+                    // SPS - include start code for proper Annex B format
+                    sps = Some(Bytes::copy_from_slice(&data[i..nal_end]));
+                }
+                8 => {
+                    // PPS - include start code for proper Annex B format
+                    pps = Some(Bytes::copy_from_slice(&data[i..nal_end]));
+                }
+                _ => {}
+            }
+
+            i = nal_end;
+        } else {
+            i += 1;
+        }
+    }
+
+    (sps, pps)
+}
+
 #[cfg(target_os = "linux")]
 async fn h264_hardware_loop(state: Arc<AppState>) {
     set_realtime_priority();
@@ -735,6 +800,22 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pts = 0u64;
     let start_time = std::time::Instant::now();
+    let mut parameter_sets_initialized = false;
+
+    // Try to get SPS/PPS directly from the encoder at startup
+    // This allows proper SDP negotiation for the first WebRTC connection
+    if let (Some(sps), Some(pps)) = (state.kvm.get_sps(), state.kvm.get_pps()) {
+        info!(
+            "H.264 SPS/PPS obtained from encoder: SPS {} bytes, PPS {} bytes",
+            sps.len(),
+            pps.len()
+        );
+        state.webrtc.update_h264_parameter_sets("default", sps, pps);
+        parameter_sets_initialized = true;
+    } else {
+        debug!("SPS/PPS not yet available from encoder, will extract from first I-frame");
+    }
+
     loop {
         let (width, height, bitrate, fps) = {
             let cfg = state.screen_config.read();
@@ -747,10 +828,30 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
                 tokio::task::spawn_blocking(move || kvm_state.kvm.get_h264(width, height, bitrate))
                     .await
             {
+                // Use the frame_type returned by hardware to detect keyframes
+                let is_keyframe = frame_result.frame_type == kvm::H264FrameType::IFrame;
                 let frame_data = frame_result.into_bytes();
-                let is_keyframe = !frame_data.is_empty()
-                    && (frame_data[0] & 0x1F == 7
-                        || (frame_data.len() > 4 && frame_data[4] & 0x1F == 7));
+
+                // Extract and store SPS/PPS from keyframes for SDP negotiation
+                if is_keyframe {
+                    debug!("I-frame detected, {} bytes", frame_data.len());
+                    if !parameter_sets_initialized {
+                        let (sps, pps) = extract_h264_parameter_sets(&frame_data);
+                        if let (Some(sps_data), Some(pps_data)) = (sps, pps) {
+                            info!(
+                                "H.264 parameter sets extracted: SPS {} bytes, PPS {} bytes",
+                                sps_data.len(),
+                                pps_data.len()
+                            );
+                            state.webrtc.update_h264_parameter_sets("default", sps_data, pps_data);
+                            parameter_sets_initialized = true;
+                        } else {
+                            debug!("Failed to extract SPS/PPS from I-frame. First 20 bytes: {:02x?}",
+                                &frame_data[..std::cmp::min(20, frame_data.len())]);
+                        }
+                    }
+                }
+
                 let timestamp = start_time.elapsed().as_micros() as u64;
                 let packets = Arc::new(crate::webrtc::transport::packetize_h264_optimized(
                     &frame_data,
@@ -763,10 +864,22 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
                 };
                 let _ = state.tx_h264.send(h264_frame);
                 let conn_ids = state.webrtc.get_source_connections("default");
-                let _ = state
-                    .webrtc
-                    .broadcast_frame(conn_ids, pts as u32, &packets)
-                    .await;
+                if !conn_ids.is_empty() {
+                    let sent = state
+                        .webrtc
+                        .broadcast_frame(conn_ids.clone(), pts as u32, &packets)
+                        .await
+                        .unwrap_or(0);
+                    if pts % 90000 == 0 {
+                        // Log every ~1 second (30fps * 3000 pts increment = 90000)
+                        debug!(
+                            "H.264 broadcast: {} connections, {} packets, sent to {} peers",
+                            conn_ids.len(),
+                            packets.len(),
+                            sent
+                        );
+                    }
+                }
                 pts = pts.wrapping_add(3000);
             }
         }
@@ -959,29 +1072,61 @@ async fn health_check_handler() -> impl IntoResponse {
     }))
 }
 
+async fn capabilities_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let config = state.config.lock().await;
+
+    // Check Tailscale status
+    let tailscale_installed = std::path::Path::new("/usr/bin/tailscale").exists();
+    let passkey_configured = std::path::Path::new("/etc/kvm/passkey.json").exists();
+
+    // For simplicity, default to true if installed
+    let tailscale_connected = tailscale_installed;
+    let tailscale_funnel_active = tailscale_installed;
+
+    Json(serde_json::json!({
+        "tailscale_installed": tailscale_installed,
+        "tailscale_connected": tailscale_connected,
+        "tailscale_funnel_active": tailscale_funnel_active,
+        "passkey_configured": passkey_configured,
+        "funnel_url": "https://login.tailscale.com"
+    }))
+}
+
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     const MSG_HEARTBEAT: u8 = 0;
     const MSG_KEYBOARD: u8 = 1;
     const MSG_MOUSE: u8 = 2;
 
     while let Some(Ok(msg)) = socket.recv().await {
-        if let Message::Binary(data) = msg {
-            if data.is_empty() {
-                continue;
-            }
-            let (msg_type, payload) = (data[0], &data[1..]);
-            match msg_type {
-                MSG_HEARTBEAT => {}
-                MSG_KEYBOARD => {
-                    let mut hid = state.hid.lock().await;
-                    let _ = hid.send_keyboard(payload).await;
+        let data = match msg {
+            // Handle JSON text messages from frontend
+            Message::Text(text) => {
+                match serde_json::from_str::<Vec<u8>>(&text) {
+                    Ok(arr) => arr,
+                    Err(_) => continue,
                 }
-                MSG_MOUSE => {
-                    let mut hid = state.hid.lock().await;
-                    let _ = hid.send_mouse(payload).await;
-                }
-                _ => {}
             }
+            // Handle binary messages for backward compatibility
+            Message::Binary(bin) => bin.to_vec(),
+            _ => continue,
+        };
+
+        if data.is_empty() {
+            continue;
+        }
+
+        let (msg_type, payload) = (data[0], &data[1..]);
+        match msg_type {
+            MSG_HEARTBEAT => {}
+            MSG_KEYBOARD => {
+                let mut hid = state.hid.lock().await;
+                let _ = hid.send_keyboard(payload).await;
+            }
+            MSG_MOUSE => {
+                let mut hid = state.hid.lock().await;
+                let _ = hid.send_mouse(payload).await;
+            }
+            _ => {}
         }
     }
 

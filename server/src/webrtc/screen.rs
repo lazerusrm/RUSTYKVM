@@ -80,3 +80,62 @@ pub async fn stop_frame_detect_handler(
 
     StatusCode::OK
 }
+
+#[derive(Debug, Deserialize)]
+pub struct SetScreenReq {
+    pub stream_type: Option<String>, // "mjpeg" or "h264"
+    pub fps: Option<u16>,
+    pub quality: Option<u16>,
+    pub width: Option<u16>,
+    pub height: Option<u16>,
+    pub bitrate: Option<u16>,
+    pub gop: Option<u8>,
+}
+
+#[cfg(target_os = "linux")]
+pub async fn set_screen_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SetScreenReq>,
+) -> impl IntoResponse {
+    let mut config = state.screen_config.write();
+
+    if let Some(stream_type) = req.stream_type {
+        config.stream_type = stream_type;
+    }
+    if let Some(fps) = req.fps {
+        config.fps = fps;
+    }
+    if let Some(quality) = req.quality {
+        config.quality = quality;
+    }
+    if let Some(width) = req.width {
+        config.width = width;
+    }
+    if let Some(height) = req.height {
+        config.height = height;
+    }
+    if let Some(bitrate) = req.bitrate {
+        config.bitrate = bitrate;
+    }
+    if let Some(gop) = req.gop {
+        config.gop = gop;
+    }
+
+    // Apply settings to KVM hardware
+    let kvm = state.kvm.clone();
+    if config.stream_type == "h264" {
+        kvm.set_stream_type(1); // H264
+    } else {
+        kvm.set_stream_type(0); // MJPEG
+    }
+
+    StatusCode::OK
+}
+
+#[cfg(target_os = "linux")]
+pub async fn get_screen_handler(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let config = state.screen_config.read();
+    Json(config)
+}
