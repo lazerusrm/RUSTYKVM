@@ -46,7 +46,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{debug, error, info, warn};
 
 #[cfg(target_os = "linux")]
-use crate::webrtc::screen::{get_screen_handler, set_screen_handler, stop_frame_detect_handler, update_frame_detect_handler};
+use crate::webrtc::screen::{stop_frame_detect_handler, update_frame_detect_handler};
 use crate::quality::SharedQualityController;
 
 #[cfg(target_os = "linux")]
@@ -58,9 +58,8 @@ use crate::vm::{
     get_mdns_handler, get_oled_handler, get_scripts_handler, get_ssh_handler, get_swap_handler,
     get_virtual_device_handler, get_web_title_handler, reboot_handler, reset_hdmi_handler,
     run_script_handler, set_gpio_handler, set_hostname_handler, set_jiggler_handler,
-    set_oled_handler, set_swap_handler, set_tls_handler, set_web_title_handler,
-    terminal_handler, update_virtual_device_handler, upload_autostart_handler,
-    upload_script_handler,
+    set_oled_handler, set_screen_handler, set_swap_handler, set_tls_handler, set_web_title_handler,
+    terminal_handler, update_virtual_device_handler, upload_autostart_handler, upload_script_handler,
 };
 
 use crate::application::{
@@ -97,10 +96,11 @@ use crate::storage_health::{
 };
 #[cfg(target_os = "linux")]
 use crate::tailscale::{
-    get_auto_update_handler, set_auto_update_handler, tailscale_down_handler,
+    get_auto_update_handler, get_version_handler as get_tailscale_version_handler,
+    init_auto_update, set_auto_update_handler, spawn_auto_update_task, tailscale_down_handler,
     tailscale_install_handler, tailscale_login_handler, tailscale_logout_handler,
     tailscale_start_handler, tailscale_status_handler, tailscale_stop_handler,
-    tailscale_uninstall_handler, tailscale_up_handler,
+    tailscale_uninstall_handler, tailscale_up_handler, trigger_update_handler,
 };
 #[cfg(not(target_os = "linux"))]
 use crate::vm::{
@@ -188,11 +188,18 @@ async fn main() {
     let _guard = init_logging(&config);
     info!("NanoKVM Rust Server Starting...");
 
+    // 3. Initialize Tailscale auto-updater
+    #[cfg(target_os = "linux")]
+    {
+        init_auto_update().await;
+        spawn_auto_update_task();
+    }
+
     let screen_config = Arc::new(parking_lot::RwLock::new(
         crate::webrtc::screen::ScreenConfig::new(),
     ));
 
-    // 3. Initialize Hardware & Loops
+    // 4. Initialize Hardware & Loops
     #[cfg(target_os = "linux")]
     let (kvm_handle, hid_engine, vm_controller, mouse_jiggler) = {
         let kvm = Arc::new(::kvm::Kvm::init());
@@ -446,6 +453,7 @@ async fn main() {
             .route("/vm/hdmi/reset", post(reset_hdmi_handler))
             .route("/vm/hdmi/enable", post(enable_hdmi_handler))
             .route("/vm/hdmi/disable", post(disable_hdmi_handler))
+            .route("/vm/screen", post(set_screen_handler))
             .route("/vm/reboot", post(reboot_handler))
             .route("/tailscale/install", post(tailscale_install_handler))
             .route("/tailscale/uninstall", post(tailscale_uninstall_handler))
@@ -459,7 +467,9 @@ async fn main() {
             .route(
                 "/tailscale/auto-update",
                 get(get_auto_update_handler).post(set_auto_update_handler),
-            );
+            )
+            .route("/tailscale/version", get(get_tailscale_version_handler))
+            .route("/tailscale/update", post(trigger_update_handler));
     }
 
     let api_routes = api_routes
@@ -698,15 +708,25 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
     let mut interval = tokio::time::interval(Duration::from_millis(33));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let (width, height, manual_quality, fps) = {
+        let (width, height, manual_quality, fps, stream_type) = {
             let cfg = state.screen_config.read();
-            (cfg.width, cfg.height, cfg.quality, cfg.fps)
+            (cfg.width, cfg.height, cfg.quality, cfg.fps, cfg.stream_type.clone())
         };
         // Use adaptive quality if enabled, otherwise manual
         let quality = state.quality_controller.get_mjpeg_quality(manual_quality);
 
         interval.tick().await;
-        if state.tx_mjpeg.receiver_count() > 0 {
+        // Only read MJPEG when we have MJPEG receivers and NO active WebRTC connections
+        // (H.264/WebRTC takes precedence to avoid encoder mode switching)
+        let webrtc_active = state.webrtc.total_connection_count() > 0;
+        if state.tx_mjpeg.receiver_count() > 0 && !webrtc_active {
+            // Extra safety check: if encoder is in H.264 mode and WebRTC just disconnected,
+            // give it a moment before switching back to MJPEG
+            if state.kvm.get_encoder_mode() == kvm::EncoderMode::H264 {
+                // H.264 was active but WebRTC disconnected - wait for next tick
+                // This prevents rapid mode toggling during connection transitions
+                continue;
+            }
             let kvm_state = state.clone();
             match tokio::task::spawn_blocking(move || {
                 kvm_state.kvm.get_mjpeg(width, height, quality)
@@ -824,15 +844,17 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
     }
 
     loop {
-        let (width, height, manual_bitrate, fps) = {
+        let (width, height, manual_bitrate, fps, stream_type) = {
             let cfg = state.screen_config.read();
-            (cfg.width, cfg.height, cfg.bitrate, cfg.fps)
+            (cfg.width, cfg.height, cfg.bitrate, cfg.fps, cfg.stream_type.clone())
         };
         // Use adaptive bitrate if enabled, otherwise manual
         let bitrate = state.quality_controller.get_h264_bitrate(manual_bitrate);
 
         interval.tick().await;
-        if state.webrtc.total_connection_count() > 0 || state.tx_h264.receiver_count() > 0 {
+        // Read H.264 ONLY when we have active WebRTC connections
+        // (tx_h264 receiver count should not trigger H.264 mode alone - that caused mode fighting)
+        if state.webrtc.total_connection_count() > 0 {
             let kvm_state = state.clone();
             if let Ok(Ok(frame_result)) =
                 tokio::task::spawn_blocking(move || kvm_state.kvm.get_h264(width, height, bitrate))
@@ -1087,20 +1109,16 @@ async fn health_check_handler() -> impl IntoResponse {
 }
 
 async fn capabilities_handler(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
-    // Check Tailscale status
-    let tailscale_installed = std::path::Path::new("/usr/bin/tailscale").exists();
+    // Get actual Tailscale capabilities
+    let ts_caps = crate::tailscale::get_capabilities().await;
     let passkey_configured = std::path::Path::new("/etc/kvm/passkey.json").exists();
 
-    // For simplicity, default to true if installed
-    let tailscale_connected = tailscale_installed;
-    let tailscale_funnel_active = tailscale_installed;
-
     Json(serde_json::json!({
-        "tailscale_installed": tailscale_installed,
-        "tailscale_connected": tailscale_connected,
-        "tailscale_funnel_active": tailscale_funnel_active,
+        "tailscale_installed": ts_caps.installed,
+        "tailscale_connected": ts_caps.connected,
+        "tailscale_funnel_active": ts_caps.funnel_active,
         "passkey_configured": passkey_configured,
-        "funnel_url": "https://login.tailscale.com"
+        "funnel_url": ts_caps.funnel_url
     }))
 }
 

@@ -378,6 +378,291 @@ async fn set_tailscale_auto_update(enabled: bool) -> Result<(), String> {
     }
 }
 
+// ============================================================================
+// Public Detection Functions (for use in capabilities endpoint)
+// ============================================================================
+
+/// Check if Tailscale binary is installed
+pub async fn check_tailscale_installed() -> bool {
+    tokio::fs::metadata(TAILSCALE_PATH).await.is_ok()
+}
+
+/// Check if Tailscale is connected to the network
+pub async fn check_tailscale_connected() -> bool {
+    let output = Command::new("tailscale")
+        .args(["status", "--json"])
+        .output()
+        .await
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok());
+
+    if let Some(json) = output {
+        // Check for Online: true in various JSON formats
+        json.contains("\"Online\":true") || json.contains("\"Online\": true")
+    } else {
+        false
+    }
+}
+
+/// Check if Tailscale Funnel is active
+pub async fn check_funnel_active() -> bool {
+    let output = Command::new("tailscale")
+        .args(["serve", "status"])
+        .output()
+        .await
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok());
+
+    if let Some(status) = output {
+        status.contains("https://") || status.contains("funnel")
+    } else {
+        false
+    }
+}
+
+/// Get the Funnel URL if active
+pub async fn get_funnel_url() -> Option<String> {
+    let output = Command::new("tailscale")
+        .args(["serve", "status"])
+        .output()
+        .await
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok());
+
+    if let Some(status) = output {
+        if let Some(start) = status.find("https://") {
+            let url_part = &status[start..];
+            let end = url_part.find(['\n', ' ', '\t']).unwrap_or(url_part.len());
+            let url = url_part[..end].trim();
+            if url.contains(".ts.net") {
+                return Some(url.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Combined capabilities check
+#[derive(Serialize)]
+pub struct TailscaleCapabilities {
+    pub installed: bool,
+    pub connected: bool,
+    pub funnel_active: bool,
+    pub funnel_url: Option<String>,
+}
+
+pub async fn get_capabilities() -> TailscaleCapabilities {
+    let installed = check_tailscale_installed().await;
+    if !installed {
+        return TailscaleCapabilities {
+            installed: false,
+            connected: false,
+            funnel_active: false,
+            funnel_url: None,
+        };
+    }
+
+    let connected = check_tailscale_connected().await;
+    let funnel_active = check_funnel_active().await;
+    let funnel_url = if funnel_active {
+        get_funnel_url().await
+    } else {
+        None
+    };
+
+    TailscaleCapabilities {
+        installed,
+        connected,
+        funnel_active,
+        funnel_url,
+    }
+}
+
+// ============================================================================
+// Background Auto-Updater
+// ============================================================================
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+static AUTO_UPDATE_ENABLED: AtomicBool = AtomicBool::new(false);
+const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
+const AUTO_UPDATE_SETTINGS_FILE: &str = "/etc/kvm/tailscale_settings.json";
+
+#[derive(Serialize, Deserialize, Default)]
+struct TailscaleSettings {
+    auto_update_enabled: bool,
+}
+
+async fn load_settings() -> TailscaleSettings {
+    match tokio::fs::read_to_string(AUTO_UPDATE_SETTINGS_FILE).await {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => TailscaleSettings::default(),
+    }
+}
+
+async fn save_settings(settings: &TailscaleSettings) -> Result<(), std::io::Error> {
+    if let Some(parent) = std::path::Path::new(AUTO_UPDATE_SETTINGS_FILE).parent() {
+        tokio::fs::create_dir_all(parent).await.ok();
+    }
+    let json = serde_json::to_string_pretty(settings)?;
+    tokio::fs::write(AUTO_UPDATE_SETTINGS_FILE, json).await
+}
+
+/// Initialize auto-update from saved settings
+pub async fn init_auto_update() {
+    let settings = load_settings().await;
+    AUTO_UPDATE_ENABLED.store(settings.auto_update_enabled, Ordering::SeqCst);
+    info!("Tailscale auto-update initialized: enabled={}", settings.auto_update_enabled);
+}
+
+/// Start background auto-update checker task
+pub fn spawn_auto_update_task() {
+    tokio::spawn(async move {
+        // Initial delay before first check
+        tokio::time::sleep(Duration::from_secs(60)).await;
+
+        loop {
+            if AUTO_UPDATE_ENABLED.load(Ordering::SeqCst) {
+                if check_tailscale_installed().await {
+                    info!("Running Tailscale auto-update check...");
+                    match perform_tailscale_update().await {
+                        Ok(updated) => {
+                            if updated {
+                                info!("Tailscale was updated successfully");
+                            } else {
+                                info!("Tailscale is already up to date");
+                            }
+                        }
+                        Err(e) => {
+                            error!("Tailscale auto-update failed: {}", e);
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(AUTO_UPDATE_CHECK_INTERVAL).await;
+        }
+    });
+}
+
+/// Perform tailscale update - returns true if updated, false if already up to date
+async fn perform_tailscale_update() -> anyhow::Result<bool> {
+    // Check current version
+    let current_version = get_current_version().await;
+
+    // Try to update using tailscale update command (if available)
+    let update_result = Command::new("tailscale")
+        .args(["update", "--yes"])
+        .output()
+        .await;
+
+    match update_result {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            if output.status.success() {
+                // Check if version changed
+                let new_version = get_current_version().await;
+                if new_version != current_version {
+                    info!("Tailscale updated from {:?} to {:?}", current_version, new_version);
+                    return Ok(true);
+                }
+                return Ok(false);
+            }
+
+            // If update command not available, try manual update
+            if stderr.contains("unknown command") || stderr.contains("not recognized") {
+                info!("Tailscale update command not available, trying manual update");
+                return perform_manual_update().await;
+            }
+
+            Err(anyhow::anyhow!("Update failed: {}", stderr))
+        }
+        Err(e) => Err(anyhow::anyhow!("Failed to run tailscale update: {}", e)),
+    }
+}
+
+async fn get_current_version() -> Option<String> {
+    Command::new("tailscale")
+        .args(["version"])
+        .output()
+        .await
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.lines().next().unwrap_or("").to_string())
+}
+
+async fn perform_manual_update() -> anyhow::Result<bool> {
+    // Download latest release
+    let _ = tokio::fs::create_dir_all(WORKSPACE).await;
+    let tar_file = format!("{}/tailscale.tgz", WORKSPACE);
+
+    let resp = reqwest::get(ORIGINAL_URL).await?;
+    if !resp.status().is_success() {
+        return Err(anyhow::anyhow!("Failed to download update"));
+    }
+
+    let bytes = resp.bytes().await?;
+    tokio::fs::write(&tar_file, &bytes).await?;
+
+    // Extract
+    let tar_file_clone = tar_file.clone();
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&tar_file_clone)?;
+        let tar = flate2::read::GzDecoder::new(file);
+        let mut archive = tar::Archive::new(tar);
+        archive.unpack(WORKSPACE)
+    })
+    .await??;
+
+    // Find and copy binaries
+    let mut entries = tokio::fs::read_dir(WORKSPACE).await?;
+    let mut updated = false;
+
+    while let Some(entry) = entries.next_entry().await? {
+        if entry.file_type().await?.is_dir() {
+            let dir_path = entry.path();
+            let ts = dir_path.join("tailscale");
+            let tsd = dir_path.join("tailscaled");
+
+            if ts.exists() && tsd.exists() {
+                // Stop tailscaled before replacing
+                let _ = Command::new("sh")
+                    .arg("-c")
+                    .arg(format!("{} stop 2>/dev/null || true", SCRIPT_PATH))
+                    .status()
+                    .await;
+
+                tokio::fs::copy(&ts, TAILSCALE_PATH).await?;
+                tokio::fs::copy(&tsd, TAILSCALED_PATH).await?;
+
+                let _ = Command::new("chmod").arg("755").arg(TAILSCALE_PATH).status().await;
+                let _ = Command::new("chmod").arg("755").arg(TAILSCALED_PATH).status().await;
+
+                // Restart tailscaled
+                let _ = Command::new("sh")
+                    .arg("-c")
+                    .arg(format!("{} start 2>/dev/null || true", SCRIPT_PATH))
+                    .status()
+                    .await;
+
+                updated = true;
+                break;
+            }
+        }
+    }
+
+    let _ = tokio::fs::remove_dir_all(WORKSPACE).await;
+
+    if updated {
+        info!("Manual Tailscale update completed");
+        Ok(true)
+    } else {
+        Err(anyhow::anyhow!("Could not find tailscale binaries in download"))
+    }
+}
+
 /// HTTP handler to get auto-update status
 #[cfg(target_os = "linux")]
 pub async fn get_auto_update_handler() -> impl IntoResponse {
@@ -390,16 +675,9 @@ pub async fn get_auto_update_handler() -> impl IntoResponse {
             .into_response();
     }
 
-    match get_tailscale_auto_update().await {
-        Ok(enabled) => {
-            info!("Tailscale auto-update status retrieved: {}", enabled);
-            Json(GetAutoUpdateRsp { enabled }).into_response()
-        }
-        Err(e) => {
-            error!("Failed to get auto-update status: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
-    }
+    let enabled = AUTO_UPDATE_ENABLED.load(Ordering::SeqCst);
+    info!("Tailscale auto-update status: {}", enabled);
+    Json(GetAutoUpdateRsp { enabled }).into_response()
 }
 
 /// HTTP handler to set auto-update status
@@ -414,14 +692,67 @@ pub async fn set_auto_update_handler(Json(req): Json<SetAutoUpdateReq>) -> impl 
             .into_response();
     }
 
-    match set_tailscale_auto_update(req.enabled).await {
-        Ok(_) => {
-            info!("Tailscale auto-update set to: {}", req.enabled);
-            StatusCode::OK.into_response()
-        }
-        Err(e) => {
-            error!("Failed to set auto-update: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+    // Update in-memory state
+    AUTO_UPDATE_ENABLED.store(req.enabled, Ordering::SeqCst);
+
+    // Persist to disk
+    let settings = TailscaleSettings {
+        auto_update_enabled: req.enabled,
+    };
+    if let Err(e) = save_settings(&settings).await {
+        error!("Failed to save auto-update settings: {}", e);
     }
+
+    // Also set the tailscale built-in auto-update if available
+    let _ = set_tailscale_auto_update(req.enabled).await;
+
+    info!("Tailscale auto-update set to: {}", req.enabled);
+    StatusCode::OK.into_response()
+}
+
+/// HTTP handler to manually trigger an update check
+#[cfg(target_os = "linux")]
+pub async fn trigger_update_handler() -> impl IntoResponse {
+    if !is_tailscale_installed() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Tailscale not installed"})),
+        )
+            .into_response();
+    }
+
+    // Spawn update in background
+    tokio::spawn(async {
+        match perform_tailscale_update().await {
+            Ok(updated) => {
+                if updated {
+                    info!("Manual Tailscale update completed successfully");
+                } else {
+                    info!("Tailscale is already up to date");
+                }
+            }
+            Err(e) => {
+                error!("Manual Tailscale update failed: {}", e);
+            }
+        }
+    });
+
+    Json(serde_json::json!({"status": "update_started"})).into_response()
+}
+
+/// HTTP handler to get Tailscale version info
+#[cfg(target_os = "linux")]
+pub async fn get_version_handler() -> impl IntoResponse {
+    if !is_tailscale_installed() {
+        return Json(serde_json::json!({
+            "installed": false,
+            "version": null
+        })).into_response();
+    }
+
+    let version = get_current_version().await;
+    Json(serde_json::json!({
+        "installed": true,
+        "version": version
+    })).into_response()
 }

@@ -156,6 +156,25 @@ impl From<u8> for InitState {
     }
 }
 
+/// Encoder mode - tracks which encoder type is currently active
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EncoderMode {
+    None = 0,
+    Mjpeg = 1,
+    H264 = 2,
+}
+
+impl From<u8> for EncoderMode {
+    fn from(v: u8) -> Self {
+        match v {
+            1 => EncoderMode::Mjpeg,
+            2 => EncoderMode::H264,
+            _ => EncoderMode::None,
+        }
+    }
+}
+
 pub struct Kvm {
     /// Track consecutive initialization failures for backoff
     init_failures: AtomicU8,
@@ -163,6 +182,7 @@ pub struct Kvm {
 
 static KVM_STATE: AtomicU8 = AtomicU8::new(0); // InitState::NotStarted
 static KVM_LOCK: Mutex<()> = Mutex::new(());
+static ENCODER_MODE: AtomicU8 = AtomicU8::new(0); // EncoderMode::None
 
 impl Kvm {
     /// Create a new KVM instance without initializing hardware.
@@ -243,6 +263,11 @@ impl Kvm {
         // Enable frame detection by default (60 = check every 60 frames for changes)
         kvm_sys::set_frame_detect(60);
 
+        // Give the MMF (multimedia framework) time to fully initialize
+        // The hardware continues initializing after kvmv_init returns
+        // Use longer delay (2s) to ensure all VI channels are added and ISP is ready
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+
         // If we got here, initialization succeeded
         KVM_STATE.store(InitState::Ready as u8, Ordering::SeqCst);
         self.init_failures.store(0, Ordering::SeqCst);
@@ -272,8 +297,42 @@ impl Kvm {
             kvm_sys::free_all_kvmv_data();
             kvm_sys::kvmv_deinit();
             KVM_STATE.store(InitState::NotStarted as u8, Ordering::SeqCst);
+            ENCODER_MODE.store(EncoderMode::None as u8, Ordering::SeqCst);
             info!("KVM hardware deinitialized.");
         }
+    }
+
+    /// Get the current encoder mode
+    pub fn get_encoder_mode(&self) -> EncoderMode {
+        EncoderMode::from(ENCODER_MODE.load(Ordering::SeqCst))
+    }
+
+    /// Switch encoder mode with proper cleanup to prevent ION memory exhaustion.
+    /// This MUST be called before switching between MJPEG and H.264 to release
+    /// the hardware VB pools allocated by the previous encoder mode.
+    ///
+    /// IMPORTANT: Caller must hold the KVM_LOCK.
+    fn switch_encoder_mode_locked(&self, new_mode: EncoderMode) {
+        let current = EncoderMode::from(ENCODER_MODE.load(Ordering::SeqCst));
+        if current == new_mode {
+            return; // No switch needed
+        }
+
+        if current != EncoderMode::None {
+            // Mode is changing
+            // NOTE: Do NOT call free_all_kvmv_data() here - the libkvm.so library
+            // handles encoder mode switching internally and will reinitialize MMF.
+            // Calling free while MMF is reinitializing causes SIGSEGV.
+            info!(
+                "Switching encoder mode from {:?} to {:?}",
+                current, new_mode
+            );
+
+            // Give time for any pending frame operations to complete
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        ENCODER_MODE.store(new_mode as u8, Ordering::SeqCst);
     }
 
     pub fn get_mjpeg(&self, width: u16, height: u16, quality: u16) -> Result<KvmFrame, KvmError> {
@@ -281,6 +340,12 @@ impl Kvm {
         if let Err(e) = self.ensure_initialized() {
             return Err(e);
         }
+
+        // Lock to prevent concurrent encoder access
+        let _guard = KVM_LOCK.lock();
+
+        // Handle encoder mode switch with proper cleanup
+        self.switch_encoder_mode_locked(EncoderMode::Mjpeg);
         self.read_img(width, height, kvm_sys::IMG_MJPEG_TYPE, quality)
     }
 
@@ -289,6 +354,12 @@ impl Kvm {
         if let Err(e) = self.ensure_initialized() {
             return Err(e);
         }
+
+        // Lock to prevent concurrent encoder access
+        let _guard = KVM_LOCK.lock();
+
+        // Handle encoder mode switch with proper cleanup
+        self.switch_encoder_mode_locked(EncoderMode::H264);
         self.read_img(width, height, kvm_sys::IMG_H264_TYPE_SPS, bitrate)
     }
 
