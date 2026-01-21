@@ -5,6 +5,7 @@ mod download;
 mod hid;
 mod network;
 mod passkey;
+mod quality;
 mod storage;
 mod storage_health;
 mod tailscale;
@@ -46,6 +47,7 @@ use tracing::{debug, error, info, warn};
 
 #[cfg(target_os = "linux")]
 use crate::webrtc::screen::{get_screen_handler, set_screen_handler, stop_frame_detect_handler, update_frame_detect_handler};
+use crate::quality::SharedQualityController;
 
 #[cfg(target_os = "linux")]
 use crate::vm::{
@@ -56,7 +58,7 @@ use crate::vm::{
     get_mdns_handler, get_oled_handler, get_scripts_handler, get_ssh_handler, get_swap_handler,
     get_virtual_device_handler, get_web_title_handler, reboot_handler, reset_hdmi_handler,
     run_script_handler, set_gpio_handler, set_hostname_handler, set_jiggler_handler,
-    set_oled_handler, set_screen_handler, set_swap_handler, set_tls_handler, set_web_title_handler,
+    set_oled_handler, set_swap_handler, set_tls_handler, set_web_title_handler,
     terminal_handler, update_virtual_device_handler, upload_autostart_handler,
     upload_script_handler,
 };
@@ -138,6 +140,7 @@ async fn create_optimized_listener(addr: SocketAddr) -> std::io::Result<TcpListe
 pub struct AppState {
     config: Arc<Config>,
     screen_config: crate::webrtc::screen::SharedScreenConfig,
+    quality_controller: SharedQualityController,
     tx_mjpeg: broadcast::Sender<Bytes>,
     tx_h264: broadcast::Sender<H264Frame>,
     tx_audio: broadcast::Sender<Bytes>,
@@ -156,6 +159,7 @@ pub struct AppState {
 pub struct AppState {
     config: Arc<Config>,
     screen_config: crate::webrtc::screen::SharedScreenConfig,
+    quality_controller: SharedQualityController,
     tx_mjpeg: broadcast::Sender<Bytes>,
     tx_h264: broadcast::Sender<H264Frame>,
     tx_audio: broadcast::Sender<Bytes>,
@@ -233,11 +237,13 @@ async fn main() {
     let whep_endpoint = Arc::new(WhepEndpoint::new(webrtc_manager.clone()));
 
     let passkey_state = Arc::new(crate::passkey::PasskeyState::new());
+    let quality_controller = crate::quality::new_shared();
 
     #[cfg(target_os = "linux")]
     let shared_state = Arc::new(AppState {
         config: config.clone(),
         screen_config: screen_config.clone(),
+        quality_controller: quality_controller.clone(),
         tx_mjpeg,
         tx_h264: tx_h264.clone(),
         tx_audio: tx_audio.clone(),
@@ -255,6 +261,7 @@ async fn main() {
     let shared_state = Arc::new(AppState {
         config: config.clone(),
         screen_config: screen_config.clone(),
+        quality_controller: quality_controller.clone(),
         tx_mjpeg,
         tx_h264: tx_h264.clone(),
         tx_audio: tx_audio.clone(),
@@ -395,6 +402,10 @@ async fn main() {
             .route("/stream/mjpeg/detect/stop", post(stop_frame_detect_handler));
     }
 
+    // Quality control API (works on all platforms)
+    api_routes = api_routes
+        .route("/stream/quality", get(get_quality_handler).post(set_quality_auto_handler));
+
     #[cfg(target_os = "linux")]
     {
         api_routes = api_routes
@@ -467,19 +478,10 @@ async fn main() {
     let app = Router::new()
          .route("/health", get(health_check_handler))
          .route("/api/system/capabilities", get(capabilities_handler))
-         // Aliases for /api/vm/* to /vm/* for Go frontend compatibility
-         .route("/api/vm/screen", get(get_screen_handler).post(set_screen_handler))
-         .route("/api/vm/info", get(get_info_handler))
-         .route("/api/vm/oled", get(get_oled_handler).post(set_oled_handler))
-         .route("/api/vm/terminal", get(terminal_handler))
-         // Aliases for /api/stream/* to /stream/* for Go frontend compatibility
-         .route("/api/stream/h264", get(h264_ws_handler))
-         .route("/api/stream/h264/direct", get(h264_direct_handler))
+         // Auth routes (outside of api_routes so they don't require auth)
          .route("/api/login", post(login_handler))
          .route("/api/logout", post(logout_handler))
          .route("/api/auth/login", post(login_handler))
-        .route("/api/logout", post(logout_handler))
-        .route("/api/auth/login", post(login_handler))
         .route("/api/auth/account", get(get_account_handler))
         .route("/api/auth/encryption-key", get(get_encryption_key_handler))
         .route(
@@ -696,10 +698,13 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
     let mut interval = tokio::time::interval(Duration::from_millis(33));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let (width, height, quality, fps) = {
+        let (width, height, manual_quality, fps) = {
             let cfg = state.screen_config.read();
             (cfg.width, cfg.height, cfg.quality, cfg.fps)
         };
+        // Use adaptive quality if enabled, otherwise manual
+        let quality = state.quality_controller.get_mjpeg_quality(manual_quality);
+
         interval.tick().await;
         if state.tx_mjpeg.receiver_count() > 0 {
             let kvm_state = state.clone();
@@ -709,7 +714,10 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
             .await
             {
                 Ok(Ok(frame)) => {
-                    let _ = state.tx_mjpeg.send(frame.into_bytes());
+                    // Track send success for adaptive quality
+                    let send_result = state.tx_mjpeg.send(frame.into_bytes());
+                    let success = send_result.is_ok();
+                    state.quality_controller.on_frame_result(success);
                 }
                 Ok(Err(e)) => {
                     // Log KVM errors (but not too frequently for expected conditions)
@@ -816,10 +824,13 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
     }
 
     loop {
-        let (width, height, bitrate, fps) = {
+        let (width, height, manual_bitrate, fps) = {
             let cfg = state.screen_config.read();
             (cfg.width, cfg.height, cfg.bitrate, cfg.fps)
         };
+        // Use adaptive bitrate if enabled, otherwise manual
+        let bitrate = state.quality_controller.get_h264_bitrate(manual_bitrate);
+
         interval.tick().await;
         if state.webrtc.total_connection_count() > 0 || state.tx_h264.receiver_count() > 0 {
             let kvm_state = state.clone();
@@ -857,7 +868,10 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
                     packets: packets.clone(),
                     raw_data: frame_data,
                 };
-                let _ = state.tx_h264.send(h264_frame);
+                let send_result = state.tx_h264.send(h264_frame);
+                // Track send success for adaptive quality
+                state.quality_controller.on_frame_result(send_result.is_ok());
+
                 let conn_ids = state.webrtc.get_source_connections("default");
                 if !conn_ids.is_empty() {
                     let sent = state
@@ -865,6 +879,11 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
                         .broadcast_frame(conn_ids.clone(), pts as u32, &packets)
                         .await
                         .unwrap_or(0);
+                    // Track WebRTC broadcast success (all connections received)
+                    let all_sent = sent == conn_ids.len();
+                    if !all_sent {
+                        state.quality_controller.on_frame_result(false);
+                    }
                     if pts % 90000 == 0 {
                         // Log every ~1 second (30fps * 3000 pts increment = 90000)
                         debug!(
@@ -1067,9 +1086,7 @@ async fn health_check_handler() -> impl IntoResponse {
     }))
 }
 
-async fn capabilities_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let config = state.config.lock().await;
-
+async fn capabilities_handler(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
     // Check Tailscale status
     let tailscale_installed = std::path::Path::new("/usr/bin/tailscale").exists();
     let passkey_configured = std::path::Path::new("/etc/kvm/passkey.json").exists();
@@ -1087,39 +1104,108 @@ async fn capabilities_handler(State(state): State<Arc<AppState>>) -> impl IntoRe
     }))
 }
 
+/// Get current quality stats
+async fn get_quality_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(state.quality_controller.get_stats())
+}
+
+/// Set auto quality mode
+#[derive(serde::Deserialize)]
+struct SetAutoQualityReq {
+    auto: bool,
+}
+
+async fn set_quality_auto_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SetAutoQualityReq>,
+) -> impl IntoResponse {
+    state.quality_controller.set_auto_enabled(req.auto);
+    Json(state.quality_controller.get_stats())
+}
+
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
-    const MSG_HEARTBEAT: u8 = 0;
-    const MSG_KEYBOARD: u8 = 1;
-    const MSG_MOUSE: u8 = 2;
+    // Event types from frontend (matches Go implementation)
+    const MSG_KEYBOARD: i32 = 1;
+    const MSG_MOUSE: i32 = 2;
+
+    // Mouse event subtypes
+    const MOUSE_UP: i32 = 0;
+    const MOUSE_DOWN: i32 = 1;
+    const MOUSE_MOVE_ABSOLUTE: i32 = 2;
+    const MOUSE_MOVE_RELATIVE: i32 = 3;
+    const MOUSE_SCROLL: i32 = 4;
 
     while let Some(Ok(msg)) = socket.recv().await {
-        let data = match msg {
-            // Handle JSON text messages from frontend
+        // Parse JSON array of integers (frontend sends [type, ...data])
+        let event: Vec<i32> = match msg {
             Message::Text(text) => {
-                match serde_json::from_str::<Vec<u8>>(&text) {
+                match serde_json::from_str(&text) {
                     Ok(arr) => arr,
                     Err(_) => continue,
                 }
             }
-            // Handle binary messages for backward compatibility
-            Message::Binary(bin) => bin.to_vec(),
+            Message::Binary(bin) => {
+                // Binary fallback: treat as raw bytes converted to i32
+                bin.iter().map(|&b| b as i32).collect()
+            }
             _ => continue,
         };
 
-        if data.is_empty() {
+        if event.is_empty() {
             continue;
         }
 
-        let (msg_type, payload) = (data[0], &data[1..]);
-        match msg_type {
-            MSG_HEARTBEAT => {}
-            MSG_KEYBOARD => {
+        match event[0] {
+            MSG_KEYBOARD if event.len() >= 5 => {
+                // Keyboard event: [1, keycode, ctrl, shift, alt, meta]
+                // Go combines modifiers: ctrl|shift|alt|meta
+                let keycode = event[1] as u8;
+                let modifier = (event[2] as u8) | (event[3] as u8) | (event[4] as u8) |
+                               (if event.len() > 5 { event[5] as u8 } else { 0 });
+
+                // Build HID keyboard report: [modifier, reserved, keycode, 0, 0, 0, 0, 0]
+                let report = [modifier, 0, keycode, 0, 0, 0, 0, 0];
                 let mut hid = state.hid.lock().await;
-                let _ = hid.send_keyboard(payload).await;
+                let _ = hid.send_keyboard(&report).await;
             }
-            MSG_MOUSE => {
+            MSG_MOUSE if event.len() >= 2 => {
+                let mouse_type = event[1];
                 let mut hid = state.hid.lock().await;
-                let _ = hid.send_mouse(payload).await;
+
+                match mouse_type {
+                    MOUSE_UP => {
+                        // Release all buttons: [0, 0, 0, 0]
+                        let _ = hid.send_mouse(&[0u8, 0, 0, 0]).await;
+                    }
+                    MOUSE_DOWN if event.len() >= 3 => {
+                        // Button down: [button, 0, 0, 0]
+                        let button = event[2] as u8;
+                        let _ = hid.send_mouse(&[button, 0, 0, 0]).await;
+                    }
+                    MOUSE_MOVE_ABSOLUTE if event.len() >= 5 => {
+                        // Full event: [2, 2, ?, x, y] - Go slices to [2, ?, x, y] and uses event[2], event[3]
+                        // So in full event: x = event[3], y = event[4]
+                        let x = event[3] as u16;
+                        let y = event[4] as u16;
+                        // Absolute move report: [button, x_lo, x_hi, y_lo, y_hi, wheel]
+                        let report = [0, (x & 0xFF) as u8, (x >> 8) as u8,
+                                        (y & 0xFF) as u8, (y >> 8) as u8, 0];
+                        let _ = hid.send_mouse(&report).await;
+                    }
+                    MOUSE_MOVE_RELATIVE if event.len() >= 5 => {
+                        // Relative move: [button, dx, dy, 0]
+                        let button = event[2] as u8;
+                        let dx = event[3] as i8 as u8;
+                        let dy = event[4] as i8 as u8;
+                        let _ = hid.send_mouse(&[button, dx, dy, 0]).await;
+                    }
+                    MOUSE_SCROLL if event.len() >= 5 => {
+                        // Scroll: [0, 0, 0, direction]
+                        let direction = if event[4] < 0 { 0xFFu8 } else { 0x01u8 };
+                        let _ = hid.send_mouse(&[0, 0, 0, direction]).await;
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }

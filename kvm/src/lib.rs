@@ -31,11 +31,35 @@ pub enum KvmError {
     LibraryNotLoaded,
 }
 
+/// H.264 frame types returned by the hardware encoder
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum H264FrameType {
+    Sps = 1,
+    Pps = 2,
+    IFrame = 3,
+    PFrame = 4,
+    Unknown = 0,
+}
+
+impl From<i32> for H264FrameType {
+    fn from(val: i32) -> Self {
+        match val {
+            1 => H264FrameType::Sps,
+            2 => H264FrameType::Pps,
+            3 => H264FrameType::IFrame,
+            4 => H264FrameType::PFrame,
+            _ => H264FrameType::Unknown,
+        }
+    }
+}
+
 /// A zero-copy wrapper around hardware-allocated memory.
 /// Calls `free_kvmv_data` automatically when dropped.
 pub struct KvmFrame {
     ptr: *mut u8,
     len: usize,
+    /// For H.264 frames, indicates the frame type (I-frame, P-frame, etc.)
+    pub frame_type: H264FrameType,
 }
 
 // Safety: The hardware buffer is safe to send between threads.
@@ -50,9 +74,9 @@ impl AsRef<[u8]> for KvmFrame {
 }
 
 impl KvmFrame {
-    fn new(ptr: *mut u8, len: usize) -> Self {
-        tracing::debug!("KvmFrame::new() - created buffer at {:p}, len={}", ptr, len);
-        Self { ptr, len }
+    fn new(ptr: *mut u8, len: usize, frame_type: H264FrameType) -> Self {
+        tracing::debug!("KvmFrame::new() - created buffer at {:p}, len={}, type={:?}", ptr, len, frame_type);
+        Self { ptr, len, frame_type }
     }
 
     /// Returns the length of the frame in bytes
@@ -216,6 +240,9 @@ impl Kvm {
         kvm_sys::kvmv_init(0);
         kvm_sys::set_venc_auto_recyc(1);
 
+        // Enable frame detection by default (60 = check every 60 frames for changes)
+        kvm_sys::set_frame_detect(60);
+
         // If we got here, initialization succeeded
         KVM_STATE.store(InitState::Ready as u8, Ordering::SeqCst);
         self.init_failures.store(0, Ordering::SeqCst);
@@ -307,7 +334,8 @@ impl Kvm {
             return Err(KvmError::NotExist);
         }
 
-        Ok(KvmFrame::new(data_ptr, size as usize))
+        let frame_type = H264FrameType::from(ret);
+        Ok(KvmFrame::new(data_ptr, size as usize, frame_type))
     }
 
     pub fn set_h264_gop(&self, gop: u8) {
@@ -320,6 +348,48 @@ impl Kvm {
         if self.is_ready() {
             kvm_sys::set_frame_detect(frame);
         }
+    }
+
+    /// Get the current SPS (Sequence Parameter Set) from the encoder
+    /// Returns the SPS data as Bytes, or None if not available
+    pub fn get_sps(&self) -> Option<Bytes> {
+        if !self.is_ready() {
+            return None;
+        }
+
+        let mut data_ptr: *mut u8 = ptr::null_mut();
+        let mut size: u32 = 0;
+
+        let ret = kvm_sys::kvmv_get_sps_frame(&mut data_ptr, &mut size);
+
+        if ret < 0 || data_ptr.is_null() || size == 0 {
+            return None;
+        }
+
+        // Copy the data since it's from an internal buffer we shouldn't free
+        let slice = unsafe { std::slice::from_raw_parts(data_ptr, size as usize) };
+        Some(Bytes::copy_from_slice(slice))
+    }
+
+    /// Get the current PPS (Picture Parameter Set) from the encoder
+    /// Returns the PPS data as Bytes, or None if not available
+    pub fn get_pps(&self) -> Option<Bytes> {
+        if !self.is_ready() {
+            return None;
+        }
+
+        let mut data_ptr: *mut u8 = ptr::null_mut();
+        let mut size: u32 = 0;
+
+        let ret = kvm_sys::kvmv_get_pps_frame(&mut data_ptr, &mut size);
+
+        if ret < 0 || data_ptr.is_null() || size == 0 {
+            return None;
+        }
+
+        // Copy the data since it's from an internal buffer we shouldn't free
+        let slice = unsafe { std::slice::from_raw_parts(data_ptr, size as usize) };
+        Some(Bytes::copy_from_slice(slice))
     }
 
     pub fn set_hdmi(&self, enable: bool) -> Result<(), KvmError> {

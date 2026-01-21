@@ -1,5 +1,5 @@
 use parking_lot::RwLock;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
@@ -12,6 +12,7 @@ use axum::{
     response::IntoResponse,
 };
 
+#[derive(Serialize)]
 pub struct ScreenConfig {
     pub stream_type: String, // "mjpeg" or "h264"
     pub fps: u16,
@@ -121,13 +122,8 @@ pub async fn set_screen_handler(
         config.gop = gop;
     }
 
-    // Apply settings to KVM hardware
-    let kvm = state.kvm.clone();
-    if config.stream_type == "h264" {
-        kvm.set_stream_type(1); // H264
-    } else {
-        kvm.set_stream_type(0); // MJPEG
-    }
+    // Stream type change is handled by frontend switching between /stream/mjpeg and /stream/h264
+    // The KVM hardware doesn't need explicit stream type configuration
 
     StatusCode::OK
 }
@@ -137,5 +133,25 @@ pub async fn get_screen_handler(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let config = state.screen_config.read();
-    Json(config)
+    // Clone the data to avoid returning the lock guard
+    Json(ScreenConfigResponse {
+        stream_type: config.stream_type.clone(),
+        fps: config.fps,
+        quality: config.quality,
+        width: config.width,
+        height: config.height,
+        bitrate: config.bitrate,
+        gop: config.gop,
+    })
+}
+
+#[derive(Serialize)]
+pub struct ScreenConfigResponse {
+    pub stream_type: String,
+    pub fps: u16,
+    pub quality: u16,
+    pub width: u16,
+    pub height: u16,
+    pub bitrate: u16,
+    pub gop: u8,
 }
