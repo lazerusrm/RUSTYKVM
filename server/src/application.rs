@@ -6,14 +6,17 @@ use axum::{
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
+use std::env;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{error, info, warn};
 
-const STABLE_URL: &str = "https://cdn.sipeed.com/nanokvm";
-const PREVIEW_URL: &str = "https://cdn.sipeed.com/nanokvm/preview";
-const APP_DIR: &str = "/kvmapp";
-const BACKUP_DIR: &str = "/root/old";
+// Default update sources:
+// - Stable: latest GitHub release asset downloads
+// - Preview: optional (only used if enabled via /etc/kvm/preview_updates)
+const DEFAULT_STABLE_URL: &str = "https://github.com/lazerusrm/RUSTYKVM/releases/latest/download";
+const DEFAULT_PREVIEW_URL: &str = "https://github.com/lazerusrm/RUSTYKVM/releases/download/preview";
+
 const CACHE_DIR: &str = "/root/.kvmcache";
 const PREVIEW_FLAG: &str = "/etc/kvm/preview_updates";
 
@@ -110,10 +113,11 @@ pub async fn offline_update_handler(mut multipart: Multipart) -> impl IntoRespon
 }
 
 async fn get_latest_info() -> anyhow::Result<LatestInfo> {
+    let (stable_url, preview_url) = get_update_base_urls();
     let base_url = if Path::new(PREVIEW_FLAG).exists() {
-        PREVIEW_URL
+        preview_url
     } else {
-        STABLE_URL
+        stable_url
     };
     let url = format!(
         "{}/latest.json?now={}",
@@ -123,7 +127,9 @@ async fn get_latest_info() -> anyhow::Result<LatestInfo> {
 
     let resp = reqwest::get(url).await?;
     let mut latest: LatestInfo = resp.json().await?;
-    latest.url = format!("{}/{}", base_url, latest.name);
+    if latest.url.is_empty() {
+        latest.url = format!("{}/{}", base_url, latest.name);
+    }
 
     Ok(latest)
 }
@@ -198,26 +204,37 @@ async fn install_package(archive_path: &Path) -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&extract_dir).await?;
     archive.unpack(&extract_dir)?;
 
-    info!("Backing up current installation...");
-    let _ = tokio::fs::remove_dir_all(BACKUP_DIR).await;
-    tokio::fs::create_dir_all(BACKUP_DIR).await?;
-
-    let mut options = fs_extra::dir::CopyOptions::new();
-    options.content_only = true;
-    fs_extra::dir::move_dir(APP_DIR, BACKUP_DIR, &options)?;
-
-    info!("Applying update...");
-    if let Err(e) = fs_extra::dir::move_dir(&extract_dir, APP_DIR, &options) {
-        warn!("Update failed, restoring backup: {}", e);
-        let _ = fs_extra::dir::move_dir(BACKUP_DIR, APP_DIR, &options);
-        return Err(e.into());
+    // Run installer from within the package.
+    // This avoids replacing the entire /kvmapp tree, and matches how our GitHub upgrade tarballs are structured.
+    let install_sh = extract_dir.join("install.sh");
+    if !install_sh.exists() {
+        return Err(anyhow::anyhow!(
+            "update package missing install.sh at {:?}",
+            install_sh
+        ));
     }
 
-    let _ = std::process::Command::new("chmod")
-        .arg("-R")
-        .arg("755")
-        .arg(APP_DIR)
-        .status();
+    info!("Applying update via install.sh...");
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("chmod +x ./install.sh; ./install.sh")
+        .current_dir(&extract_dir)
+        .status()?;
+    if !status.success() {
+        warn!("install.sh failed with status: {}", status);
+        return Err(anyhow::anyhow!("install.sh failed"));
+    }
 
     Ok(())
+}
+
+fn get_update_base_urls() -> (String, String) {
+    let stable =
+        env::var("NANOKVM_UPDATE_STABLE_URL").unwrap_or_else(|_| DEFAULT_STABLE_URL.into());
+    let preview =
+        env::var("NANOKVM_UPDATE_PREVIEW_URL").unwrap_or_else(|_| DEFAULT_PREVIEW_URL.into());
+    (
+        stable.trim_end_matches('/').to_string(),
+        preview.trim_end_matches('/').to_string(),
+    )
 }

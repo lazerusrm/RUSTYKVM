@@ -1764,7 +1764,7 @@ dependencies = [
 
 [[package]]
 name = "nanokvm-server"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "aes",
  "anyhow",
@@ -1780,7 +1780,6 @@ dependencies = [
  "chrono",
  "cipher",
  "flate2",
- "fs_extra",
  "futures",
  "get_if_addrs",
  "hid",

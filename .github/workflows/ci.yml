@@ -159,8 +159,9 @@ jobs:
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
           mkdir -p package
-          cp binary/nanokvm-server package/NanoKVM-Server
-          chmod +x package/NanoKVM-Server
+          cp binary/nanokvm-server package/nanokvm-server
+          chmod +x package/nanokvm-server
+          cp scripts/S95nanokvm package/S95nanokvm
 
           # Create simple install script
           cat > package/install.sh << 'INSTALL'
@@ -172,19 +173,27 @@ jobs:
           /etc/init.d/S95nanokvm stop 2>/dev/null || true
 
           # Backup original
-          if [ -f /kvmapp/server/NanoKVM-Server ]; then
-            cp /kvmapp/server/NanoKVM-Server /kvmapp/server/NanoKVM-Server.bak
+          if [ -f /kvmapp/nanokvm-server ]; then
+            cp /kvmapp/nanokvm-server /kvmapp/nanokvm-server.bak
           fi
 
           # Install new binary
-          cp NanoKVM-Server /kvmapp/server/NanoKVM-Server
-          chmod +x /kvmapp/server/NanoKVM-Server
+          cp nanokvm-server /kvmapp/nanokvm-server
+          chmod +x /kvmapp/nanokvm-server
+
+          # Install init script (hardened)
+          cp S95nanokvm /etc/init.d/S95nanokvm
+          chmod +x /etc/init.d/S95nanokvm
+
+          # Record version for /api/application/version
+          echo "__VERSION__" > /kvmapp/version
 
           # Start service
           /etc/init.d/S95nanokvm start
 
           echo "Done! NanoKVM-RS installed."
           INSTALL
+          sed -i "s/__VERSION__/${VERSION}/g" package/install.sh
           chmod +x package/install.sh
 
           cd package
@@ -192,12 +201,21 @@ jobs:
           cd ..
           sha256sum nanokvm-rs-${VERSION}-upgrade.tar.gz > nanokvm-rs-${VERSION}-upgrade.tar.gz.sha256
 
+          # Create latest.json compatible with the in-device updater.
+          ASSET="nanokvm-rs-${VERSION}-upgrade.tar.gz"
+          SIZE="$(stat -c%s "${ASSET}")"
+          SHA512="$(openssl dgst -sha512 -binary "${ASSET}" | base64 -w0)"
+          cat > latest.json <<EOF
+          {"version":"${VERSION}","name":"${ASSET}","sha512":"${SHA512}","size":${SIZE}}
+          EOF
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             nanokvm-rs-*-upgrade.tar.gz
             nanokvm-rs-*-upgrade.tar.gz.sha256
+            latest.json
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
