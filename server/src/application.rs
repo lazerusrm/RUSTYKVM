@@ -4,6 +4,7 @@ use axum::{
     response::IntoResponse,
 };
 use base64::Engine;
+use reqwest::header;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 use std::env;
@@ -119,13 +120,17 @@ async fn get_latest_info() -> anyhow::Result<LatestInfo> {
     } else {
         stable_url
     };
-    let url = format!(
-        "{}/latest.json?now={}",
-        base_url,
-        chrono::Utc::now().timestamp()
-    );
 
-    let resp = reqwest::get(url).await?;
+    // Avoid cache-busting query params for GitHub release assets (querystrings are not reliable there).
+    // Instead, ask intermediaries not to cache.
+    let url = format!("{}/latest.json", base_url);
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(url)
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::PRAGMA, "no-cache")
+        .send()
+        .await?;
     let mut latest: LatestInfo = resp.json().await?;
     if latest.url.is_empty() {
         latest.url = format!("{}/{}", base_url, latest.name);
@@ -171,7 +176,13 @@ async fn perform_update() -> anyhow::Result<()> {
     let target_path = Path::new(CACHE_DIR).join(&latest.name);
 
     info!("Downloading update: {} -> {:?}", latest.url, target_path);
-    let resp = reqwest::get(&latest.url).await?;
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&latest.url)
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::PRAGMA, "no-cache")
+        .send()
+        .await?;
     let bytes = resp.bytes().await?;
     tokio::fs::write(&target_path, &bytes).await?;
 
@@ -217,7 +228,9 @@ async fn install_package(archive_path: &Path) -> anyhow::Result<()> {
     info!("Applying update via install.sh...");
     let status = std::process::Command::new("sh")
         .arg("-c")
-        .arg("chmod +x ./install.sh; ./install.sh")
+        // The updater runs from within the server process; do not stop/start the service inside
+        // the install script or it can kill the running updater mid-install.
+        .arg("chmod +x ./install.sh; NANOKVM_SKIP_SERVICE=1 ./install.sh")
         .current_dir(&extract_dir)
         .status()?;
     if !status.success() {

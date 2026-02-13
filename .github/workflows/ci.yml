@@ -169,8 +169,11 @@ jobs:
           set -e
           echo "Installing NanoKVM-RS..."
 
-          # Stop existing service
-          /etc/init.d/S95nanokvm stop 2>/dev/null || true
+          # When invoked by the in-device auto-updater, skipping service control is required:
+          # stopping the service here would kill the updater process mid-install.
+          if [ "${NANOKVM_SKIP_SERVICE:-0}" != "1" ]; then
+            /etc/init.d/S95nanokvm stop 2>/dev/null || true
+          fi
 
           # Backup original
           if [ -f /kvmapp/nanokvm-server ]; then
@@ -178,8 +181,9 @@ jobs:
           fi
 
           # Install new binary
-          cp nanokvm-server /kvmapp/nanokvm-server
-          chmod +x /kvmapp/nanokvm-server
+          cp nanokvm-server /kvmapp/nanokvm-server.new
+          chmod +x /kvmapp/nanokvm-server.new
+          mv -f /kvmapp/nanokvm-server.new /kvmapp/nanokvm-server
 
           # Install init script (hardened)
           cp S95nanokvm /etc/init.d/S95nanokvm
@@ -188,8 +192,9 @@ jobs:
           # Record version for /api/application/version
           echo "__VERSION__" > /kvmapp/version
 
-          # Start service
-          /etc/init.d/S95nanokvm start
+          if [ "${NANOKVM_SKIP_SERVICE:-0}" != "1" ]; then
+            /etc/init.d/S95nanokvm start
+          fi
 
           echo "Done! NanoKVM-RS installed."
           INSTALL

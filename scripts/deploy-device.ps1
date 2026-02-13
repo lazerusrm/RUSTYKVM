@@ -35,6 +35,9 @@ try {
     throw "sha256 mismatch: local=$LocalSha remote=$RemoteSha"
   }
 
+  $VersionLine = (Get-Content (Join-Path $RepoRoot "server/Cargo.toml") | Select-String -Pattern '^version\\s*=\\s*\"' | Select-Object -First 1).Line
+  $Version = ($VersionLine -split '\"')[1]
+
   Write-Host "Activating + restarting service..."
   $remoteCmd =
     'set -e; ' +
@@ -42,6 +45,7 @@ try {
     'if [ -f ' + $TargetPath + ' ]; then cp -f ' + $TargetPath + ' ' + $TargetPath + '.bak.$TS; fi; ' +
     'mv -f ' + $RemoteNew + ' ' + $TargetPath + '; ' +
     'chmod +x ' + $TargetPath + '; ' +
+    'echo v' + $Version + ' > /kvmapp/version; ' +
     '/etc/init.d/S95nanokvm restart'
   ssh $SshHost $remoteCmd | Out-Null
   if ($LASTEXITCODE -ne 0) {

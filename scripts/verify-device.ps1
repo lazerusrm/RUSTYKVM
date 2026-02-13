@@ -1,6 +1,8 @@
 param(
   [string]$BaseUrl = "https://192.168.0.49",
-  [switch]$RunE2E
+  [switch]$RunE2E,
+  [string]$User = $env:NANOKVM_USER,
+  [string]$Pass = $env:NANOKVM_PASS
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +22,23 @@ function Assert-Http200([string]$Url) {
 Assert-Http200 "$BaseUrl/health"
 Assert-Http200 "$BaseUrl/login.html"
 Assert-Http200 "$BaseUrl/api/system/capabilities"
+
+if ($User -and $Pass) {
+  $cookie = New-TemporaryFile
+  try {
+    $loginBody = @{ username = $User; password = $Pass } | ConvertTo-Json -Compress
+    $resp = curl.exe -k -s -c $cookie.FullName -H "Content-Type: application/json" -d $loginBody "$BaseUrl/api/login"
+    $json = $resp | ConvertFrom-Json
+    if ($json.code -ne 0) {
+      throw "login failed: $($json.msg)"
+    }
+
+    Assert-Http200 "$BaseUrl/api/application/version"
+  }
+  finally {
+    Remove-Item -Force $cookie.FullName -ErrorAction SilentlyContinue
+  }
+}
 
 if ($RunE2E) {
   $RepoRoot = Split-Path -Parent $PSScriptRoot
