@@ -1,9 +1,9 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [string]$BaseUrl = "https://192.168.0.49",
   [switch]$RunE2E
 )
+
+$ErrorActionPreference = "Stop"
 
 function Assert-Http200([string]$Url) {
   $code = (curl.exe -k -s -o NUL -w "%{http_code}" $Url).Trim()
@@ -14,7 +14,7 @@ function Assert-Http200([string]$Url) {
 
 Assert-Http200 "$BaseUrl/health"
 Assert-Http200 "$BaseUrl/login.html"
-Assert-Http200 "$BaseUrl/api/application/version"
+Assert-Http200 "$BaseUrl/api/system/capabilities"
 
 if ($RunE2E) {
   $RepoRoot = Split-Path -Parent $PSScriptRoot
@@ -29,4 +29,3 @@ if ($RunE2E) {
 }
 
 Write-Host "OK"
-

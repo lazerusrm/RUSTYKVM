@@ -14,7 +14,6 @@ check_200() {
 
 check_200 "$BASE_URL/health"
 check_200 "$BASE_URL/login.html"
-check_200 "$BASE_URL/api/application/version"
+check_200 "$BASE_URL/api/system/capabilities"
 
 echo "OK"
-

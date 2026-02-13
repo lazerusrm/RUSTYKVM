@@ -14,7 +14,10 @@ test.describe('authenticated', () => {
   test('desktop UI loads', async ({ page }) => {
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#root')).toBeVisible();
-    await expect.poll(async () => (await page.locator('#root').innerText()).trim().length).toBeGreaterThan(0);
+    // `#root` can render mostly non-text UI (icons/canvas/video), so innerText can be empty.
+    await expect
+      .poll(async () => page.locator('#root').evaluate((el) => el.childElementCount), { timeout: 30_000 })
+      .toBeGreaterThan(0);
   });
 
   test('health page loads', async ({ page }) => {

@@ -1,9 +1,9 @@
-$ErrorActionPreference = "Stop"
-
 param(
-  [string]$Host = "nanokvm",
+  [string]$SshHost = "nanokvm",
   [string]$TargetPath = "/kvmapp/nanokvm-server"
 )
+
+$ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $RepoRoot
@@ -20,30 +20,36 @@ try {
   $LocalSha = (Get-FileHash $LocalBin -Algorithm SHA256).Hash.ToLowerInvariant()
   $RemoteNew = "${TargetPath}.new"
 
-  Write-Host "Uploading binary to $Host:$RemoteNew"
-  scp $LocalBin "${Host}:$RemoteNew" | Out-Null
+  Write-Host "Uploading binary to ${SshHost}:$RemoteNew"
+  scp $LocalBin "${SshHost}:$RemoteNew" | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "scp failed with exit code $LASTEXITCODE"
+  }
 
   Write-Host "Verifying SHA256 on device..."
-  $RemoteSha = (ssh $Host "sha256sum $RemoteNew | cut -d ' ' -f 1").Trim().ToLowerInvariant()
+  $RemoteSha = (ssh $SshHost "sha256sum $RemoteNew | cut -d ' ' -f 1").Trim().ToLowerInvariant()
+  if ($LASTEXITCODE -ne 0) {
+    throw "sha256sum failed with exit code $LASTEXITCODE"
+  }
   if ($RemoteSha -ne $LocalSha) {
     throw "sha256 mismatch: local=$LocalSha remote=$RemoteSha"
   }
 
   Write-Host "Activating + restarting service..."
-  ssh $Host @"
-set -e
-TS=\$(date +%s)
-if [ -f "$TargetPath" ]; then
-  cp -f "$TargetPath" "$TargetPath.bak.\$TS"
-fi
-mv -f "$RemoteNew" "$TargetPath"
-chmod +x "$TargetPath"
-/etc/init.d/S95nanokvm restart
-"@ | Out-Null
+  $remoteCmd =
+    'set -e; ' +
+    'TS=$(date +%s); ' +
+    'if [ -f ' + $TargetPath + ' ]; then cp -f ' + $TargetPath + ' ' + $TargetPath + '.bak.$TS; fi; ' +
+    'mv -f ' + $RemoteNew + ' ' + $TargetPath + '; ' +
+    'chmod +x ' + $TargetPath + '; ' +
+    '/etc/init.d/S95nanokvm restart'
+  ssh $SshHost $remoteCmd | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "remote activate/restart failed with exit code $LASTEXITCODE"
+  }
 
   Write-Host "Done."
 }
 finally {
   Pop-Location
 }
-
