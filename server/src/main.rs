@@ -40,7 +40,6 @@ use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::{broadcast, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
-use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -588,7 +587,6 @@ async fn main() {
         .route("/api/network/wifi", post(connect_wifi_no_auth_handler))
         .nest("/api", api_routes)
         .fallback_service(ServeDir::new(web_path))
-        .layer(CompressionLayer::new())
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::predicate(|origin, _req_head| {
