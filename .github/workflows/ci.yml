@@ -221,7 +221,7 @@ jobs:
             nanokvm-rs-*-upgrade.tar.gz
             nanokvm-rs-*-upgrade.tar.gz.sha256
             latest.json
-          generate_release_notes: true
+          generate_release_notes: false
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
           body: |
