@@ -1,0 +1,88 @@
+#!/bin/sh
+# NanoKVM-RS init script (hardened)
+
+DAEMON=/kvmapp/nanokvm-server
+PIDFILE=/var/run/nanokvm.pid
+LOGFILE=/var/log/nanokvm.log
+
+export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
+
+is_running() {
+  [ -f "$PIDFILE" ] || return 1
+  PID="$(cat "$PIDFILE" 2>/dev/null)"
+  [ -n "$PID" ] || return 1
+  kill -0 "$PID" 2>/dev/null
+}
+
+start_nanosrv() {
+  echo "Starting NanoKVM-RS..."
+  cd /kvmapp || exit 1
+
+  # Clean stale pidfile
+  if [ -f "$PIDFILE" ] && ! is_running; then
+    rm -f "$PIDFILE"
+  fi
+
+  start-stop-daemon -S -b -m -p "$PIDFILE" -a "$DAEMON" -- >> "$LOGFILE" 2>&1
+
+  # Give the daemon a moment to bind ports; fail fast if it exited.
+  sleep 1
+  if ! is_running; then
+    echo "NanoKVM-RS failed to start. Last 60 log lines:" >&2
+    tail -n 60 "$LOGFILE" 2>/dev/null >&2 || true
+    return 1
+  fi
+
+  echo "NanoKVM-RS started (PID: $(cat "$PIDFILE"))"
+}
+
+stop_nanosrv() {
+  echo "Stopping NanoKVM-RS..."
+  if [ -f "$PIDFILE" ]; then
+    start-stop-daemon -K -p "$PIDFILE" -s TERM 2>/dev/null || true
+
+    # Wait for exit to avoid restart races (ports still bound).
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      is_running || break
+      sleep 0.5
+    done
+
+    rm -f "$PIDFILE"
+    echo "NanoKVM-RS stopped"
+  else
+    killall nanokvm-server 2>/dev/null || true
+    echo "NanoKVM-RS stopped (killall)"
+  fi
+}
+
+status_nanosrv() {
+  if is_running; then
+    echo "NanoKVM-RS is running (PID: $(cat "$PIDFILE"))"
+    return 0
+  fi
+  echo "NanoKVM-RS is not running"
+  return 1
+}
+
+case "$1" in
+  start)
+    start_nanosrv
+    ;;
+  stop)
+    stop_nanosrv
+    ;;
+  restart)
+    stop_nanosrv
+    start_nanosrv
+    ;;
+  status)
+    status_nanosrv
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|status}"
+    exit 1
+    ;;
+esac
+
+exit 0
+

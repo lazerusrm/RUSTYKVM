@@ -141,16 +141,35 @@ DAEMON_ARGS=""
 PIDFILE=/var/run/nanokvm.pid
 LOGFILE=/var/log/nanokvm.log
 
+export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
+
+is_running() {
+    [ -f "$PIDFILE" ] || return 1
+    PID="$(cat "$PIDFILE" 2>/dev/null)"
+    [ -n "$PID" ] || return 1
+    kill -0 "$PID" 2>/dev/null
+}
+
 case "$1" in
     start)
         echo "Starting NanoKVM server..."
         cd /kvmapp
         start-stop-daemon -S -b -m -p $PIDFILE -a $DAEMON -- $DAEMON_ARGS >> $LOGFILE 2>&1
+        sleep 1
+        if ! is_running; then
+            echo "NanoKVM server failed to start. Last 60 log lines:" >&2
+            tail -n 60 "$LOGFILE" 2>/dev/null >&2 || true
+            exit 1
+        fi
         echo "NanoKVM server started"
         ;;
     stop)
         echo "Stopping NanoKVM server..."
         start-stop-daemon -K -p $PIDFILE -s TERM
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+            is_running || break
+            sleep 0.5
+        done
         rm -f $PIDFILE
         echo "NanoKVM server stopped"
         ;;

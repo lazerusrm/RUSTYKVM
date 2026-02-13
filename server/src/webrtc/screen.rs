@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
-use crate::AppState;
+use crate::api::ApiResponse;
 #[cfg(target_os = "linux")]
-use axum::http::StatusCode;
+use crate::AppState;
 #[cfg(target_os = "linux")]
 use axum::{
     extract::{Json, State},
@@ -62,7 +62,7 @@ pub async fn update_frame_detect_handler(
         0
     };
     state.kvm.set_frame_detect(frame);
-    StatusCode::OK
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 #[cfg(target_os = "linux")]
@@ -79,7 +79,7 @@ pub async fn stop_frame_detect_handler(
         kvm.set_frame_detect(FRAME_DETECT_INTERVAL);
     });
 
-    StatusCode::OK
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,16 +125,14 @@ pub async fn set_screen_handler(
     // Stream type change is handled by frontend switching between /stream/mjpeg and /stream/h264
     // The KVM hardware doesn't need explicit stream type configuration
 
-    StatusCode::OK
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 #[cfg(target_os = "linux")]
-pub async fn get_screen_handler(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn get_screen_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let config = state.screen_config.read();
     // Clone the data to avoid returning the lock guard
-    Json(ScreenConfigResponse {
+    Json(ApiResponse::ok(ScreenConfigResponse {
         stream_type: config.stream_type.clone(),
         fps: config.fps,
         quality: config.quality,
@@ -142,7 +140,7 @@ pub async fn get_screen_handler(
         height: config.height,
         bitrate: config.bitrate,
         gop: config.gop,
-    })
+    }))
 }
 
 #[derive(Serialize)]

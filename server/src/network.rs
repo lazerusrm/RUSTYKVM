@@ -1,4 +1,4 @@
-use axum::http::StatusCode;
+use crate::api::ApiResponse;
 use axum::{extract::Json, response::IntoResponse};
 use network::NetworkManager;
 use serde::{Deserialize, Serialize};
@@ -44,11 +44,22 @@ pub struct ConnectWifiReq {
 
 pub async fn wol_handler(Json(req): Json<WakeOnLANReq>) -> impl IntoResponse {
     match NetworkManager::wake_on_lan(&req.mac).await {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => {
-            error!("WoL failed: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-        }
+        Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        Err(e) => match e {
+            network::NetworkError::InvalidMac(_) => Json(ApiResponse::<serde_json::Value>::err(
+                -2,
+                "invalid MAC address",
+            ))
+            .into_response(),
+            network::NetworkError::CommandFailed(msg) => {
+                error!("WoL command failed: {}", msg);
+                Json(ApiResponse::<serde_json::Value>::err(-3, &msg)).into_response()
+            }
+            _ => {
+                error!("WoL failed: {}", e);
+                Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
+            }
+        },
     }
 }
 
@@ -65,31 +76,37 @@ pub async fn get_wol_macs_handler() -> impl IntoResponse {
                     }
                 })
                 .collect();
-            Json(GetMacRsp { macs }).into_response()
+            Json(ApiResponse::ok(GetMacRsp { macs })).into_response()
         }
         Err(e) => {
             error!("Failed to get WoL MACs: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            Json(ApiResponse::<GetMacRsp>::err(-1, &e.to_string())).into_response()
         }
     }
 }
 
 pub async fn set_wol_name_handler(Json(req): Json<SetMacNameReq>) -> impl IntoResponse {
     match NetworkManager::set_wol_mac_name(&req.mac, &req.name).await {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => {
-            error!("Failed to set WoL name: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-        }
+        Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        Err(e) => match e {
+            network::NetworkError::InvalidMac(msg) => {
+                // Go uses a distinct code when the MAC isn't present in the cache.
+                Json(ApiResponse::<serde_json::Value>::err(-3, &msg)).into_response()
+            }
+            _ => {
+                error!("Failed to set WoL name: {}", e);
+                Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
+            }
+        },
     }
 }
 
 pub async fn delete_wol_mac_handler(Json(req): Json<DeleteMacReq>) -> impl IntoResponse {
     match NetworkManager::delete_wol_mac(&req.mac).await {
-        Ok(_) => StatusCode::OK.into_response(),
+        Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
         Err(e) => {
             error!("Failed to delete WoL MAC: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
         }
     }
 }
@@ -112,26 +129,45 @@ pub async fn get_wifi_handler() -> impl IntoResponse {
         }
     }
 
-    Json(GetWifiRsp {
+    Json(ApiResponse::ok(GetWifiRsp {
         supported,
         connected,
         ssid,
         ap_mode,
-    })
+    }))
 }
 
 pub async fn connect_wifi_handler(Json(req): Json<ConnectWifiReq>) -> impl IntoResponse {
     match NetworkManager::connect_wifi(&req.ssid, &req.password).await {
-        Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        Err(e) => {
+            error!("WiFi connect failed: {}", e);
+            Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
+        }
     }
 }
 
 pub async fn disconnect_wifi_handler() -> impl IntoResponse {
     match NetworkManager::disconnect_wifi().await {
-        Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        Err(e) => {
+            error!("WiFi disconnect failed: {}", e);
+            Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
+        }
     }
+}
+
+/// Connect Wi-Fi without auth (only available while in AP mode).
+pub async fn connect_wifi_no_auth_handler(Json(req): Json<ConnectWifiReq>) -> impl IntoResponse {
+    let ap_mode = NetworkManager::is_wifi_ap_mode().await;
+    if !ap_mode {
+        return Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "wifi no-auth connect only allowed in ap mode",
+        ))
+        .into_response();
+    }
+    connect_wifi_handler(Json(req)).await.into_response()
 }
 
 // --- Ethernet Handlers ---
@@ -141,10 +177,10 @@ pub async fn get_ethernet_config_handler() -> impl IntoResponse {
     let saved = NetworkManager::read_saved_config().await;
     let current = NetworkManager::get_current_config().await;
 
-    Json(network::GetEthernetConfigRsp {
+    Json(ApiResponse::ok(network::GetEthernetConfigRsp {
         config: saved,
         current,
-    })
+    }))
     .into_response()
 }
 
@@ -155,15 +191,11 @@ pub async fn set_ethernet_config_handler(
     match NetworkManager::set_ethernet_config(req).await {
         Ok(_) => {
             tracing::info!("Ethernet configuration updated");
-            StatusCode::OK.into_response()
+            Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
         }
         Err(e) => {
             error!("Failed to set ethernet config: {}", e);
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response()
+            Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
         }
     }
 }

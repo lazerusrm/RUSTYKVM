@@ -1,3 +1,4 @@
+mod api;
 mod application;
 mod auth;
 mod config;
@@ -13,6 +14,7 @@ mod utils;
 mod vm;
 mod webrtc;
 
+use crate::api::ApiResponse;
 use crate::download::*;
 use crate::webrtc::transport::{
     IceCandidate, PeerConnectionManager, WebRtcConfig, WhepEndpoint, WhepRequest,
@@ -45,9 +47,9 @@ use tower_http::set_header::SetResponseHeaderLayer;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 
+use crate::quality::SharedQualityController;
 #[cfg(target_os = "linux")]
 use crate::webrtc::screen::{stop_frame_detect_handler, update_frame_detect_handler};
-use crate::quality::SharedQualityController;
 
 #[cfg(target_os = "linux")]
 use crate::vm::{
@@ -55,11 +57,12 @@ use crate::vm::{
     disable_ssh_handler, enable_hdmi_handler, enable_mdns_handler, enable_ssh_handler,
     get_autostart_content_handler, get_autostart_handler, get_gpio_handler, get_hardware_handler,
     get_hdmi_state_handler, get_hostname_handler, get_info_handler, get_jiggler_handler,
-    get_mdns_handler, get_oled_handler, get_scripts_handler, get_ssh_handler, get_swap_handler,
-    get_virtual_device_handler, get_web_title_handler, reboot_handler, reset_hdmi_handler,
-    run_script_handler, set_gpio_handler, set_hostname_handler, set_jiggler_handler,
-    set_oled_handler, set_screen_handler, set_swap_handler, set_tls_handler, set_web_title_handler,
-    terminal_handler, update_virtual_device_handler, upload_autostart_handler, upload_script_handler,
+    get_mdns_handler, get_memory_limit_handler, get_oled_handler, get_scripts_handler,
+    get_ssh_handler, get_swap_handler, get_virtual_device_handler, get_web_title_handler,
+    reboot_handler, reset_hdmi_handler, run_script_handler, set_gpio_handler, set_hostname_handler,
+    set_jiggler_handler, set_memory_limit_handler, set_oled_handler, set_screen_handler,
+    set_swap_handler, set_tls_handler, set_web_title_handler, terminal_handler,
+    update_virtual_device_handler, upload_autostart_handler, upload_script_handler,
 };
 
 use crate::application::{
@@ -72,12 +75,14 @@ use crate::auth::{
 };
 use crate::config::Config;
 use crate::hid::{
-    add_shortcut_handler, delete_shortcut_handler, get_hid_mode_handler, get_shortcuts_handler,
-    paste_handler, reset_hid_handler, set_hid_mode_handler,
+    add_shortcut_handler, delete_shortcut_handler, get_hid_mode_handler, get_leader_key_handler,
+    get_shortcuts_handler, paste_handler, reset_hid_handler, set_hid_mode_handler,
+    set_leader_key_handler,
 };
 use crate::network::{
-    connect_wifi_handler, delete_wol_mac_handler, disconnect_wifi_handler, get_wifi_handler,
-    get_wol_macs_handler, set_wol_name_handler, wol_handler,
+    connect_wifi_handler, connect_wifi_no_auth_handler, delete_wol_mac_handler,
+    disconnect_wifi_handler, get_wifi_handler, get_wol_macs_handler, set_wol_name_handler,
+    wol_handler,
 };
 
 #[cfg(target_os = "linux")]
@@ -99,13 +104,15 @@ use crate::tailscale::{
     get_auto_update_handler, get_version_handler as get_tailscale_version_handler,
     init_auto_update, set_auto_update_handler, spawn_auto_update_task, tailscale_down_handler,
     tailscale_install_handler, tailscale_login_handler, tailscale_logout_handler,
-    tailscale_start_handler, tailscale_status_handler, tailscale_stop_handler,
-    tailscale_uninstall_handler, tailscale_up_handler, trigger_update_handler,
+    tailscale_restart_handler, tailscale_start_handler, tailscale_status_handler,
+    tailscale_stop_handler, tailscale_uninstall_handler, tailscale_up_handler,
+    trigger_update_handler,
 };
 #[cfg(not(target_os = "linux"))]
 use crate::vm::{
-    delete_script_handler, get_info_handler, get_oled_handler, get_scripts_handler,
-    run_script_handler, set_oled_handler, terminal_handler, upload_script_handler,
+    delete_script_handler, get_info_handler, get_memory_limit_handler, get_oled_handler,
+    get_scripts_handler, run_script_handler, set_memory_limit_handler, set_oled_handler,
+    terminal_handler, upload_script_handler,
 };
 use axum_server::tls_rustls::RustlsConfig;
 use std::net::SocketAddr;
@@ -166,6 +173,7 @@ pub struct AppState {
     hid: Arc<Mutex<::hid::HidEngine>>,
     webrtc: Arc<PeerConnectionManager>,
     whep: Arc<WhepEndpoint>,
+    jiggler: Arc<::vm::jiggler::MouseJiggler>,
     health_state: Arc<HealthState>,
     passkey_state: Arc<crate::passkey::PasskeyState>,
 }
@@ -211,7 +219,12 @@ async fn main() {
     };
 
     #[cfg(not(target_os = "linux"))]
-    let hid_engine = Arc::new(Mutex::new(::hid::HidEngine::new().await));
+    let (hid_engine, mouse_jiggler) = {
+        let hid = Arc::new(Mutex::new(::hid::HidEngine::new().await));
+        let jiggler = Arc::new(::vm::jiggler::MouseJiggler::new(hid.clone()));
+        jiggler.spawn_loop().await;
+        (hid, jiggler)
+    };
 
     // Create Broadcast Channels - reduced buffer size for lower latency
     // Smaller buffers (4 vs 16) reduce frame queuing delay at cost of potential drops under load
@@ -275,6 +288,7 @@ async fn main() {
         hid: hid_engine.clone(),
         webrtc: webrtc_manager.clone(),
         whep: whep_endpoint.clone(),
+        jiggler: mouse_jiggler.clone(),
         health_state: Arc::new(HealthState::default()),
         passkey_state,
     });
@@ -337,6 +351,8 @@ async fn main() {
         .route("/download/image/enabled", get(image_enabled_handler))
         .route("/download/image/status", get(status_image_handler))
         .route("/download/image/file", post(upload_image_handler))
+        // Go frontend uses this legacy upload endpoint.
+        .route("/download/file", post(upload_image_handler))
         .route("/download/image", post(download_image_url_handler))
         .route("/stream/mjpeg", get(mjpeg_stream))
         .route("/stream/h264", get(h264_ws_handler))
@@ -350,7 +366,13 @@ async fn main() {
                 .post(upload_script_handler)
                 .delete(delete_script_handler),
         )
+        // Go frontend expects a dedicated upload endpoint.
+        .route("/vm/script/upload", post(upload_script_handler))
         .route("/vm/script/run", post(run_script_handler))
+        .route(
+            "/vm/memory/limit",
+            get(get_memory_limit_handler).post(set_memory_limit_handler),
+        )
         .route("/storage/image", get(get_images_handler))
         .route("/storage/image/mounted", get(get_mounted_image_handler))
         .route("/storage/image/mount", post(mount_image_handler))
@@ -375,6 +397,10 @@ async fn main() {
             post(add_shortcut_handler).delete(delete_shortcut_handler),
         )
         .route(
+            "/hid/shortcut/leader-key",
+            get(get_leader_key_handler).post(set_leader_key_handler),
+        )
+        .route(
             "/hid/mode",
             get(get_hid_mode_handler).post(set_hid_mode_handler),
         )
@@ -386,12 +412,16 @@ async fn main() {
                 .delete(delete_wol_mac_handler),
         )
         .route("/network/wol/name", post(set_wol_name_handler))
+        // Go frontend routes for WoL MAC history management.
         .route(
-            "/network/wifi",
-            get(get_wifi_handler)
-                .post(connect_wifi_handler)
-                .delete(disconnect_wifi_handler),
+            "/network/wol/mac",
+            get(get_wol_macs_handler).delete(delete_wol_mac_handler),
         )
+        .route("/network/wol/mac/name", post(set_wol_name_handler))
+        // Go frontend routes for Wi-Fi.
+        .route("/network/wifi", get(get_wifi_handler))
+        .route("/network/wifi/connect", post(connect_wifi_handler))
+        .route("/network/wifi/disconnect", post(disconnect_wifi_handler))
         .route("/ws", get(ws_handler));
 
     #[cfg(target_os = "linux")]
@@ -410,8 +440,10 @@ async fn main() {
     }
 
     // Quality control API (works on all platforms)
-    api_routes = api_routes
-        .route("/stream/quality", get(get_quality_handler).post(set_quality_auto_handler));
+    api_routes = api_routes.route(
+        "/stream/quality",
+        get(get_quality_handler).post(set_quality_auto_handler),
+    );
 
     #[cfg(target_os = "linux")]
     {
@@ -424,6 +456,11 @@ async fn main() {
             .route("/vm/gpio", get(get_gpio_handler).post(set_gpio_handler))
             .route(
                 "/vm/mouse-jiggler",
+                get(get_jiggler_handler).post(set_jiggler_handler),
+            )
+            // Go backend historically accepted a trailing slash here.
+            .route(
+                "/vm/mouse-jiggler/",
                 get(get_jiggler_handler).post(set_jiggler_handler),
             )
             .route("/vm/mdns", get(get_mdns_handler))
@@ -447,7 +484,7 @@ async fn main() {
                 get(get_autostart_content_handler)
                     .post(upload_autostart_handler)
                     .delete(delete_autostart_handler),
-                )
+            )
             .route("/vm/tls", post(set_tls_handler))
             .route("/vm/hdmi", get(get_hdmi_state_handler))
             .route("/vm/hdmi/reset", post(reset_hdmi_handler))
@@ -455,9 +492,12 @@ async fn main() {
             .route("/vm/hdmi/disable", post(disable_hdmi_handler))
             .route("/vm/screen", post(set_screen_handler))
             .route("/vm/reboot", post(reboot_handler))
+            // Go frontend expects this path.
+            .route("/vm/system/reboot", post(reboot_handler))
             .route("/tailscale/install", post(tailscale_install_handler))
             .route("/tailscale/uninstall", post(tailscale_uninstall_handler))
             .route("/tailscale/start", post(tailscale_start_handler))
+            .route("/tailscale/restart", post(tailscale_restart_handler))
             .route("/tailscale/stop", post(tailscale_stop_handler))
             .route("/tailscale/status", get(tailscale_status_handler))
             .route("/tailscale/login", post(tailscale_login_handler))
@@ -466,6 +506,36 @@ async fn main() {
             .route("/tailscale/logout", post(tailscale_logout_handler))
             .route(
                 "/tailscale/auto-update",
+                get(get_auto_update_handler).post(set_auto_update_handler),
+            )
+            // Go frontend (extensions) alias routes.
+            .route(
+                "/extensions/tailscale/install",
+                post(tailscale_install_handler),
+            )
+            .route(
+                "/extensions/tailscale/uninstall",
+                post(tailscale_uninstall_handler),
+            )
+            .route("/extensions/tailscale/start", post(tailscale_start_handler))
+            .route(
+                "/extensions/tailscale/restart",
+                post(tailscale_restart_handler),
+            )
+            .route("/extensions/tailscale/stop", post(tailscale_stop_handler))
+            .route(
+                "/extensions/tailscale/status",
+                get(tailscale_status_handler),
+            )
+            .route("/extensions/tailscale/login", post(tailscale_login_handler))
+            .route("/extensions/tailscale/up", post(tailscale_up_handler))
+            .route("/extensions/tailscale/down", post(tailscale_down_handler))
+            .route(
+                "/extensions/tailscale/logout",
+                post(tailscale_logout_handler),
+            )
+            .route(
+                "/extensions/tailscale/auto-update",
                 get(get_auto_update_handler).post(set_auto_update_handler),
             )
             .route("/tailscale/version", get(get_tailscale_version_handler))
@@ -486,12 +556,12 @@ async fn main() {
         ));
 
     let app = Router::new()
-         .route("/health", get(health_check_handler))
-         .route("/api/system/capabilities", get(capabilities_handler))
-         // Auth routes (outside of api_routes so they don't require auth)
-         .route("/api/login", post(login_handler))
-         .route("/api/logout", post(logout_handler))
-         .route("/api/auth/login", post(login_handler))
+        .route("/health", get(health_check_handler))
+        .route("/api/system/capabilities", get(capabilities_handler))
+        // Auth routes (outside of api_routes so they don't require auth)
+        .route("/api/login", post(login_handler))
+        .route("/api/logout", post(logout_handler))
+        .route("/api/auth/login", post(login_handler))
         .route("/api/auth/account", get(get_account_handler))
         .route("/api/auth/encryption-key", get(get_encryption_key_handler))
         .route(
@@ -514,6 +584,8 @@ async fn main() {
             get(recovery_download_handler),
         )
         .route("/api/passkey/qr", get(qr_code_handler))
+        // Connect Wi-Fi without auth (only in AP mode), matching Go backend.
+        .route("/api/network/wifi", post(connect_wifi_no_auth_handler))
         .nest("/api", api_routes)
         .fallback_service(ServeDir::new(web_path))
         .layer(CompressionLayer::new())
@@ -708,18 +780,25 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
     let mut interval = tokio::time::interval(Duration::from_millis(33));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let (width, height, manual_quality, fps, stream_type) = {
+        let (width, height, manual_quality, fps, _stream_type) = {
             let cfg = state.screen_config.read();
-            (cfg.width, cfg.height, cfg.quality, cfg.fps, cfg.stream_type.clone())
+            (
+                cfg.width,
+                cfg.height,
+                cfg.quality,
+                cfg.fps,
+                cfg.stream_type.clone(),
+            )
         };
         // Use adaptive quality if enabled, otherwise manual
         let quality = state.quality_controller.get_mjpeg_quality(manual_quality);
 
         interval.tick().await;
-        // Only read MJPEG when we have MJPEG receivers and NO active WebRTC connections
-        // (H.264/WebRTC takes precedence to avoid encoder mode switching)
-        let webrtc_active = state.webrtc.total_connection_count() > 0;
-        if state.tx_mjpeg.receiver_count() > 0 && !webrtc_active {
+        // Only read MJPEG when we have MJPEG receivers and NO active H.264 consumers.
+        // H.264 (WebRTC or direct) takes precedence to avoid encoder mode switching.
+        let h264_active =
+            state.webrtc.total_connection_count() > 0 || state.tx_h264.receiver_count() > 0;
+        if state.tx_mjpeg.receiver_count() > 0 && !h264_active {
             // Extra safety check: if encoder is in H.264 mode and WebRTC just disconnected,
             // give it a moment before switching back to MJPEG
             if state.kvm.get_encoder_mode() == kvm::EncoderMode::H264 {
@@ -761,60 +840,6 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
     }
 }
 
-/// Extract SPS and PPS NAL units from H.264 Annex B stream
-/// Returns (SPS, PPS) as Bytes if found
-fn extract_h264_parameter_sets(data: &[u8]) -> (Option<Bytes>, Option<Bytes>) {
-    let mut sps = None;
-    let mut pps = None;
-    let mut i = 0;
-
-    while i < data.len() {
-        // Find start code (00 00 01 or 00 00 00 01)
-        if i + 3 < data.len() && data[i] == 0 && data[i + 1] == 0 {
-            let (start_code_len, nal_start) = if data[i + 2] == 1 {
-                (3, i + 3)
-            } else if i + 4 < data.len() && data[i + 2] == 0 && data[i + 3] == 1 {
-                (4, i + 4)
-            } else {
-                i += 1;
-                continue;
-            };
-
-            if nal_start >= data.len() {
-                break;
-            }
-
-            // Find end of this NAL unit (next start code or end of data)
-            let mut nal_end = data.len();
-            for j in nal_start..data.len() - 2 {
-                if data[j] == 0 && data[j + 1] == 0 && (data[j + 2] == 1 || (j + 3 < data.len() && data[j + 2] == 0 && data[j + 3] == 1)) {
-                    nal_end = j;
-                    break;
-                }
-            }
-
-            let nal_type = data[nal_start] & 0x1F;
-            match nal_type {
-                7 => {
-                    // SPS - include start code for proper Annex B format
-                    sps = Some(Bytes::copy_from_slice(&data[i..nal_end]));
-                }
-                8 => {
-                    // PPS - include start code for proper Annex B format
-                    pps = Some(Bytes::copy_from_slice(&data[i..nal_end]));
-                }
-                _ => {}
-            }
-
-            i = nal_end;
-        } else {
-            i += 1;
-        }
-    }
-
-    (sps, pps)
-}
-
 #[cfg(target_os = "linux")]
 async fn h264_hardware_loop(state: Arc<AppState>) {
     set_realtime_priority();
@@ -827,34 +852,29 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pts = 0u64;
     let start_time = std::time::Instant::now();
+    let mut frame_counter: u64 = 0;
     let mut parameter_sets_initialized = false;
 
-    // Try to get SPS/PPS directly from the encoder at startup
-    // This allows proper SDP negotiation for the first WebRTC connection
-    if let (Some(sps), Some(pps)) = (state.kvm.get_sps(), state.kvm.get_pps()) {
-        info!(
-            "H.264 SPS/PPS obtained from encoder: SPS {} bytes, PPS {} bytes",
-            sps.len(),
-            pps.len()
-        );
-        state.webrtc.update_h264_parameter_sets("default", sps, pps);
-        parameter_sets_initialized = true;
-    } else {
-        debug!("SPS/PPS not yet available from encoder, will extract from first I-frame");
-    }
-
     loop {
-        let (width, height, manual_bitrate, fps, stream_type) = {
+        let (width, height, manual_bitrate, fps, _stream_type) = {
             let cfg = state.screen_config.read();
-            (cfg.width, cfg.height, cfg.bitrate, cfg.fps, cfg.stream_type.clone())
+            (
+                cfg.width,
+                cfg.height,
+                cfg.bitrate,
+                cfg.fps,
+                cfg.stream_type.clone(),
+            )
         };
         // Use adaptive bitrate if enabled, otherwise manual
         let bitrate = state.quality_controller.get_h264_bitrate(manual_bitrate);
 
         interval.tick().await;
-        // Read H.264 ONLY when we have active WebRTC connections
-        // (tx_h264 receiver count should not trigger H.264 mode alone - that caused mode fighting)
-        if state.webrtc.total_connection_count() > 0 {
+        // Read H.264 when either WebRTC peers are connected OR direct H.264 clients are subscribed.
+        // Direct streaming uses `tx_h264` (no WebRTC connections), so we must not gate on WebRTC alone.
+        let webrtc_active = state.webrtc.total_connection_count() > 0;
+        let direct_receivers = state.tx_h264.receiver_count();
+        if webrtc_active || direct_receivers > 0 {
             let kvm_state = state.clone();
             if let Ok(Ok(frame_result)) =
                 tokio::task::spawn_blocking(move || kvm_state.kvm.get_h264(width, height, bitrate))
@@ -867,34 +887,39 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
                 // Extract and store SPS/PPS from keyframes for SDP negotiation
                 if is_keyframe {
                     debug!("I-frame detected, {} bytes", frame_data.len());
-                    if !parameter_sets_initialized {
-                        let (sps, pps) = extract_h264_parameter_sets(&frame_data);
-                        if let (Some(sps_data), Some(pps_data)) = (sps, pps) {
-                            info!("H.264 parameter sets extracted: SPS {} bytes, PPS {} bytes", sps_data.len(), pps_data.len());
-                            state.webrtc.update_h264_parameter_sets("default", sps_data, pps_data);
-                            parameter_sets_initialized = true;
-                        } else {
-                            debug!("Failed to extract SPS/PPS from I-frame. First 20 bytes: {:02x?}",
-                                &frame_data[..std::cmp::min(20, frame_data.len())]);
+                    let (sps, pps) =
+                        crate::webrtc::transport::extract_h264_parameter_sets(&frame_data);
+                    if let (Some(sps_data), Some(pps_data)) = (sps, pps) {
+                        if !parameter_sets_initialized {
+                            info!(
+                                "H.264 parameter sets extracted: SPS {} bytes, PPS {} bytes",
+                                sps_data.len(),
+                                pps_data.len()
+                            );
                         }
+                        state
+                            .webrtc
+                            .update_h264_parameter_sets("default", sps_data, pps_data);
+                        parameter_sets_initialized = true;
+                    } else if !parameter_sets_initialized {
+                        debug!(
+                            "Failed to extract SPS/PPS from first I-frame. First 20 bytes: {:02x?}",
+                            &frame_data[..std::cmp::min(20, frame_data.len())]
+                        );
                     }
                 }
 
-                let timestamp = start_time.elapsed().as_micros() as u64;
                 let packets = Arc::new(crate::webrtc::transport::packetize_h264_optimized(
                     &frame_data,
                 ));
-                let h264_frame = H264Frame {
-                    is_keyframe,
-                    timestamp,
-                    packets: packets.clone(),
-                    raw_data: frame_data,
-                };
-                let send_result = state.tx_h264.send(h264_frame);
-                // Track send success for adaptive quality
-                state.quality_controller.on_frame_result(send_result.is_ok());
-
                 let conn_ids = state.webrtc.get_source_connections("default");
+
+                // Single success metric per frame for adaptive quality control:
+                // - If only WebRTC is active, base on whether all peers received the frame.
+                // - If only direct is active, base on whether broadcast channel delivered.
+                // - If both are active, require both to succeed.
+                let mut success_for_adaptation = true;
+
                 if !conn_ids.is_empty() {
                     let sent = state
                         .webrtc
@@ -903,11 +928,8 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
                         .unwrap_or(0);
                     // Track WebRTC broadcast success (all connections received)
                     let all_sent = sent == conn_ids.len();
-                    if !all_sent {
-                        state.quality_controller.on_frame_result(false);
-                    }
-                    if pts % 90000 == 0 {
-                        // Log every ~1 second (30fps * 3000 pts increment = 90000)
+                    success_for_adaptation &= all_sent;
+                    if fps > 0 && frame_counter % fps as u64 == 0 {
                         debug!(
                             "H.264 broadcast: {} connections, {} packets, sent to {} peers",
                             conn_ids.len(),
@@ -916,7 +938,27 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
                         );
                     }
                 }
-                pts = pts.wrapping_add(3000);
+
+                if direct_receivers > 0 {
+                    let timestamp = start_time.elapsed().as_micros() as u64;
+                    let h264_frame = H264Frame {
+                        is_keyframe,
+                        timestamp,
+                        packets: packets.clone(),
+                        raw_data: frame_data,
+                    };
+                    let direct_ok = state.tx_h264.send(h264_frame).is_ok();
+                    success_for_adaptation &= direct_ok;
+                }
+
+                state
+                    .quality_controller
+                    .on_frame_result(success_for_adaptation);
+
+                let fps_u64 = (fps.max(1)) as u64;
+                let pts_step = (90_000u64 / fps_u64).max(1);
+                pts = pts.wrapping_add(pts_step);
+                frame_counter = frame_counter.wrapping_add(1);
             }
         }
         let frame_interval = Duration::from_secs_f64(1.0 / fps as f64);
@@ -1102,10 +1144,10 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) ->
 }
 
 async fn health_check_handler() -> impl IntoResponse {
-    Json(serde_json::json!({
-        "status": "ok",
-        "service": "nanokvm"
-    }))
+    Json(ApiResponse::ok(serde_json::json!({
+        "service": "nanokvm",
+        "status": "ok"
+    })))
 }
 
 async fn capabilities_handler(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -1124,7 +1166,7 @@ async fn capabilities_handler(State(_state): State<Arc<AppState>>) -> impl IntoR
 
 /// Get current quality stats
 async fn get_quality_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(state.quality_controller.get_stats())
+    Json(ApiResponse::ok(state.quality_controller.get_stats()))
 }
 
 /// Set auto quality mode
@@ -1138,11 +1180,13 @@ async fn set_quality_auto_handler(
     Json(req): Json<SetAutoQualityReq>,
 ) -> impl IntoResponse {
     state.quality_controller.set_auto_enabled(req.auto);
-    Json(state.quality_controller.get_stats())
+    Json(ApiResponse::ok(state.quality_controller.get_stats()))
 }
 
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
-    // Event types from frontend (matches Go implementation)
+    // Old protocol (text JSON array): [type, ...ints]
+    // New protocol (>= Go 2.3.2): binary frame where first byte is type and remainder is a raw HID report.
+    const MSG_HEARTBEAT: i32 = 0;
     const MSG_KEYBOARD: i32 = 1;
     const MSG_MOUSE: i32 = 2;
 
@@ -1154,78 +1198,104 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     const MOUSE_SCROLL: i32 = 4;
 
     while let Some(Ok(msg)) = socket.recv().await {
-        // Parse JSON array of integers (frontend sends [type, ...data])
-        let event: Vec<i32> = match msg {
-            Message::Text(text) => {
-                match serde_json::from_str(&text) {
-                    Ok(arr) => arr,
-                    Err(_) => continue,
-                }
-            }
+        match msg {
             Message::Binary(bin) => {
-                // Binary fallback: treat as raw bytes converted to i32
-                bin.iter().map(|&b| b as i32).collect()
-            }
-            _ => continue,
-        };
-
-        if event.is_empty() {
-            continue;
-        }
-
-        match event[0] {
-            MSG_KEYBOARD if event.len() >= 5 => {
-                // Keyboard event: [1, keycode, ctrl, shift, alt, meta]
-                // Go combines modifiers: ctrl|shift|alt|meta
-                let keycode = event[1] as u8;
-                let modifier = (event[2] as u8) | (event[3] as u8) | (event[4] as u8) |
-                               (if event.len() > 5 { event[5] as u8 } else { 0 });
-
-                // Build HID keyboard report: [modifier, reserved, keycode, 0, 0, 0, 0, 0]
-                let report = [modifier, 0, keycode, 0, 0, 0, 0, 0];
-                let mut hid = state.hid.lock().await;
-                let _ = hid.send_keyboard(&report).await;
-            }
-            MSG_MOUSE if event.len() >= 2 => {
-                let mouse_type = event[1];
-                let mut hid = state.hid.lock().await;
-
-                match mouse_type {
-                    MOUSE_UP => {
-                        // Release all buttons: [0, 0, 0, 0]
-                        let _ = hid.send_mouse(&[0u8, 0, 0, 0]).await;
+                if bin.is_empty() {
+                    continue;
+                }
+                // New protocol: first byte is type, rest is raw HID report.
+                match bin[0] {
+                    0 => {
+                        state.jiggler.update_activity();
                     }
-                    MOUSE_DOWN if event.len() >= 3 => {
-                        // Button down: [button, 0, 0, 0]
-                        let button = event[2] as u8;
-                        let _ = hid.send_mouse(&[button, 0, 0, 0]).await;
+                    1 => {
+                        state.jiggler.update_activity();
+                        let report = &bin[1..];
+                        if report.len() == 8 {
+                            let mut hid = state.hid.lock().await;
+                            let _ = hid.send_keyboard(report).await;
+                        }
                     }
-                    MOUSE_MOVE_ABSOLUTE if event.len() >= 5 => {
-                        // Full event: [2, 2, ?, x, y] - Go slices to [2, ?, x, y] and uses event[2], event[3]
-                        // So in full event: x = event[3], y = event[4]
-                        let x = event[3] as u16;
-                        let y = event[4] as u16;
-                        // Absolute move report: [button, x_lo, x_hi, y_lo, y_hi, wheel]
-                        let report = [0, (x & 0xFF) as u8, (x >> 8) as u8,
-                                        (y & 0xFF) as u8, (y >> 8) as u8, 0];
-                        let _ = hid.send_mouse(&report).await;
-                    }
-                    MOUSE_MOVE_RELATIVE if event.len() >= 5 => {
-                        // Relative move: [button, dx, dy, 0]
-                        let button = event[2] as u8;
-                        let dx = event[3] as i8 as u8;
-                        let dy = event[4] as i8 as u8;
-                        let _ = hid.send_mouse(&[button, dx, dy, 0]).await;
-                    }
-                    MOUSE_SCROLL if event.len() >= 5 => {
-                        // Scroll: [0, 0, 0, direction]
-                        let direction = if event[4] < 0 { 0xFFu8 } else { 0x01u8 };
-                        let _ = hid.send_mouse(&[0, 0, 0, direction]).await;
+                    2 => {
+                        state.jiggler.update_activity();
+                        let report = &bin[1..];
+                        if report.len() == 4 || report.len() == 6 {
+                            let mut hid = state.hid.lock().await;
+                            let _ = hid.send_mouse(report).await;
+                        }
                     }
                     _ => {}
                 }
             }
-            _ => {}
+            Message::Text(text) => {
+                let event: Vec<i32> = match serde_json::from_str(&text) {
+                    Ok(arr) => arr,
+                    Err(_) => continue,
+                };
+                if event.is_empty() {
+                    continue;
+                }
+
+                match event[0] {
+                    MSG_HEARTBEAT => {
+                        state.jiggler.update_activity();
+                    }
+                    MSG_KEYBOARD if event.len() >= 5 => {
+                        state.jiggler.update_activity();
+                        // Keyboard event: [1, keycode, ctrl, shift, alt, meta]
+                        let keycode = event[1] as u8;
+                        let modifier = (event[2] as u8)
+                            | (event[3] as u8)
+                            | (event[4] as u8)
+                            | (if event.len() > 5 { event[5] as u8 } else { 0 });
+
+                        let report = [modifier, 0, keycode, 0, 0, 0, 0, 0];
+                        let mut hid = state.hid.lock().await;
+                        let _ = hid.send_keyboard(&report).await;
+                    }
+                    MSG_MOUSE if event.len() >= 2 => {
+                        state.jiggler.update_activity();
+                        let mouse_type = event[1];
+                        let mut hid = state.hid.lock().await;
+
+                        match mouse_type {
+                            MOUSE_UP => {
+                                let _ = hid.send_mouse(&[0u8, 0, 0, 0]).await;
+                            }
+                            MOUSE_DOWN if event.len() >= 3 => {
+                                let button = event[2] as u8;
+                                let _ = hid.send_mouse(&[button, 0, 0, 0]).await;
+                            }
+                            MOUSE_MOVE_ABSOLUTE if event.len() >= 5 => {
+                                let x = event[3] as u16;
+                                let y = event[4] as u16;
+                                let report = [
+                                    0,
+                                    (x & 0xFF) as u8,
+                                    (x >> 8) as u8,
+                                    (y & 0xFF) as u8,
+                                    (y >> 8) as u8,
+                                    0,
+                                ];
+                                let _ = hid.send_mouse(&report).await;
+                            }
+                            MOUSE_MOVE_RELATIVE if event.len() >= 5 => {
+                                let button = event[2] as u8;
+                                let dx = event[3] as i8 as u8;
+                                let dy = event[4] as i8 as u8;
+                                let _ = hid.send_mouse(&[button, dx, dy, 0]).await;
+                            }
+                            MOUSE_SCROLL if event.len() >= 5 => {
+                                let direction = if event[4] < 0 { 0xFFu8 } else { 0x01u8 };
+                                let _ = hid.send_mouse(&[0, 0, 0, direction]).await;
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => continue,
         }
     }
 

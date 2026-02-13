@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use axum::http::StatusCode;
+use crate::api::ApiResponse;
 use axum::{extract::Json, response::IntoResponse};
 use serde::Serialize;
 use tokio::process::Command;
@@ -59,22 +59,52 @@ pub struct LoginRsp {
     pub url: String,
 }
 
+/// Go-frontend status response shape (`/api/extensions/tailscale/status`)
+#[derive(Debug, Serialize)]
+pub struct GetTailscaleStatusRsp {
+    pub state: String, // notInstall | notRunning | notLogin | stopped | running
+    pub name: String,
+    pub ip: String,
+    pub account: String,
+}
+
+fn ui_state_from_backend_state(state: &str) -> &'static str {
+    match state {
+        "NoState" | "Starting" => "notRunning",
+        "NeedsLogin" => "notLogin",
+        "Running" => "running",
+        "Stopped" => "stopped",
+        _ => "notRunning",
+    }
+}
+
 pub async fn tailscale_start_handler() -> impl IntoResponse {
     let cmd = format!(
         "cp -f {} {} && {} start",
         SCRIPT_BACKUP_PATH, SCRIPT_PATH, SCRIPT_PATH
     );
     match Command::new("sh").arg("-c").arg(cmd).status().await {
-        Ok(s) if s.success() => StatusCode::OK,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(-1, "start failed")).into_response(),
+    }
+}
+
+pub async fn tailscale_restart_handler() -> impl IntoResponse {
+    let cmd = format!(
+        "cp -f {} {} && {} restart",
+        SCRIPT_BACKUP_PATH, SCRIPT_PATH, SCRIPT_PATH
+    );
+    match Command::new("sh").arg("-c").arg(cmd).status().await {
+        Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(-1, "restart failed")).into_response(),
     }
 }
 
 pub async fn tailscale_stop_handler() -> impl IntoResponse {
     let cmd = format!("{} stop && rm -f {}", SCRIPT_PATH, SCRIPT_PATH);
     match Command::new("sh").arg("-c").arg(cmd).status().await {
-        Ok(s) if s.success() => StatusCode::OK,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(-1, "stop failed")).into_response(),
     }
 }
 
@@ -82,15 +112,13 @@ pub async fn tailscale_status_handler() -> impl IntoResponse {
     // Check if tailscale is installed
     let installed = tokio::fs::metadata(TAILSCALE_PATH).await.is_ok();
     if !installed {
-        return Json(TsStatusResponse {
-            installed: false,
-            running: false,
-            connected: false,
-            backend_state: String::new(),
-            hostname: String::new(),
-            tailnet_name: String::new(),
-            ips: Vec::new(),
-        });
+        return Json(ApiResponse::ok(GetTailscaleStatusRsp {
+            state: "notInstall".to_string(),
+            name: String::new(),
+            ip: String::new(),
+            account: String::new(),
+        }))
+        .into_response();
     }
 
     let output = Command::new("tailscale")
@@ -98,67 +126,63 @@ pub async fn tailscale_status_handler() -> impl IntoResponse {
         .output()
         .await;
 
-    match output {
-        Ok(out) if out.status.success() => {
-            let json_str = String::from_utf8_lossy(&out.stdout);
-            match serde_json::from_str::<TsStatusRaw>(&json_str) {
-                Ok(status) => {
-                    let self_node = status.self_node.as_ref();
-                    let tailnet = status.current_tailnet.as_ref();
+    let status: Option<TsStatusRaw> = match output {
+        Ok(out) if out.status.success() => serde_json::from_slice::<TsStatusRaw>(&out.stdout).ok(),
+        _ => None,
+    };
 
-                    Json(TsStatusResponse {
-                        installed: true,
-                        running: true,
-                        connected: self_node.and_then(|n| n.online).unwrap_or(false),
-                        backend_state: status.backend_state,
-                        hostname: self_node
-                            .and_then(|n| n.host_name.clone())
-                            .unwrap_or_default(),
-                        tailnet_name: tailnet.and_then(|t| t.name.clone()).unwrap_or_default(),
-                        ips: self_node
-                            .and_then(|n| n.tailscale_ips.clone())
-                            .unwrap_or_default(),
-                    })
-                }
-                Err(e) => {
-                    error!("Failed to parse tailscale status: {}", e);
-                    Json(TsStatusResponse {
-                        installed: true,
-                        running: true,
-                        connected: false,
-                        backend_state: "ParseError".to_string(),
-                        hostname: String::new(),
-                        tailnet_name: String::new(),
-                        ips: Vec::new(),
-                    })
+    let Some(status) = status else {
+        return Json(ApiResponse::ok(GetTailscaleStatusRsp {
+            state: "notRunning".to_string(),
+            name: String::new(),
+            ip: String::new(),
+            account: String::new(),
+        }))
+        .into_response();
+    };
+
+    let self_node = status.self_node.as_ref();
+    let tailnet = status.current_tailnet.as_ref();
+
+    let mut ipv4 = String::new();
+    if let Some(ips) = self_node.and_then(|n| n.tailscale_ips.as_ref()) {
+        for ip in ips {
+            if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
+                if let std::net::IpAddr::V4(v4) = addr {
+                    ipv4 = v4.to_string();
+                    break;
                 }
             }
         }
-        Ok(_) => {
-            // Command ran but tailscale returned an error (not running?)
-            Json(TsStatusResponse {
-                installed: true,
-                running: false,
-                connected: false,
-                backend_state: "Stopped".to_string(),
-                hostname: String::new(),
-                tailnet_name: String::new(),
-                ips: Vec::new(),
-            })
-        }
-        Err(_) => Json(TsStatusResponse {
-            installed: true,
-            running: false,
-            connected: false,
-            backend_state: "Error".to_string(),
-            hostname: String::new(),
-            tailnet_name: String::new(),
-            ips: Vec::new(),
-        }),
     }
+
+    Json(ApiResponse::ok(GetTailscaleStatusRsp {
+        state: ui_state_from_backend_state(&status.backend_state).to_string(),
+        name: self_node
+            .and_then(|n| n.host_name.clone())
+            .unwrap_or_default(),
+        ip: ipv4,
+        account: tailnet.and_then(|t| t.name.clone()).unwrap_or_default(),
+    }))
+    .into_response()
 }
 
 pub async fn tailscale_login_handler() -> impl IntoResponse {
+    // If tailscale is already running, frontend expects an empty URL.
+    if let Ok(out) = Command::new("tailscale")
+        .args(["status", "--json"])
+        .output()
+        .await
+    {
+        if out.status.success() {
+            if let Ok(status) = serde_json::from_slice::<TsStatusRaw>(&out.stdout) {
+                if status.backend_state == "Running" {
+                    return Json(ApiResponse::ok(LoginRsp { url: String::new() })).into_response();
+                }
+            }
+        }
+    }
+
     // We use tokio::process::Command with a timeout
     let cmd_future = Command::new("sh")
         .arg("-c")
@@ -180,19 +204,25 @@ pub async fn tailscale_login_handler() -> impl IntoResponse {
                             .next()
                             .unwrap_or_default();
                         if url.starts_with("https://login.tailscale.com") {
-                            return Json(LoginRsp {
+                            return Json(ApiResponse::ok(LoginRsp {
                                 url: url.to_string(),
-                            })
+                            }))
                             .into_response();
                         }
                     }
                 }
             }
             error!("Tailscale login URL not found in output: {}", combined);
-            (StatusCode::INTERNAL_SERVER_ERROR, "No login URL found").into_response()
+            Json(ApiResponse::<serde_json::Value>::err(-2, "login failed")).into_response()
         }
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-        Err(_) => (StatusCode::GATEWAY_TIMEOUT, "Tailscale command timed out").into_response(),
+        Ok(Err(e)) => {
+            Json(ApiResponse::<serde_json::Value>::err(-2, &e.to_string())).into_response()
+        }
+        Err(_) => Json(ApiResponse::<serde_json::Value>::err(
+            -2,
+            "tailscale command timed out",
+        ))
+        .into_response(),
     }
 }
 
@@ -203,8 +233,12 @@ pub async fn tailscale_up_handler() -> impl IntoResponse {
         .status()
         .await
     {
-        Ok(s) if s.success() => StatusCode::OK,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "tailscale up failed",
+        ))
+        .into_response(),
     }
 }
 
@@ -215,8 +249,12 @@ pub async fn tailscale_down_handler() -> impl IntoResponse {
         .status()
         .await
     {
-        Ok(s) if s.success() => StatusCode::OK,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "tailscale down failed",
+        ))
+        .into_response(),
     }
 }
 
@@ -227,8 +265,8 @@ pub async fn tailscale_logout_handler() -> impl IntoResponse {
         .status()
         .await
     {
-        Ok(s) if s.success() => StatusCode::OK,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(-1, "logout failed")).into_response(),
     }
 }
 
@@ -238,7 +276,7 @@ pub async fn tailscale_install_handler() -> impl IntoResponse {
             error!("Tailscale installation failed: {}", e);
         }
     });
-    StatusCode::ACCEPTED
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 pub async fn tailscale_uninstall_handler() -> impl IntoResponse {
@@ -250,7 +288,7 @@ pub async fn tailscale_uninstall_handler() -> impl IntoResponse {
     let _ = tokio::fs::remove_file(TAILSCALE_PATH).await;
     let _ = tokio::fs::remove_file(TAILSCALED_PATH).await;
     let _ = tokio::fs::remove_file(SCRIPT_PATH).await;
-    StatusCode::OK
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 async fn perform_tailscale_install() -> anyhow::Result<()> {
@@ -327,6 +365,7 @@ pub struct GetAutoUpdateRsp {
 
 #[derive(Debug, Deserialize)]
 pub struct SetAutoUpdateReq {
+    #[serde(rename = "enable", alias = "enabled")]
     pub enabled: bool,
 }
 
@@ -513,7 +552,10 @@ async fn save_settings(settings: &TailscaleSettings) -> Result<(), std::io::Erro
 pub async fn init_auto_update() {
     let settings = load_settings().await;
     AUTO_UPDATE_ENABLED.store(settings.auto_update_enabled, Ordering::SeqCst);
-    info!("Tailscale auto-update initialized: enabled={}", settings.auto_update_enabled);
+    info!(
+        "Tailscale auto-update initialized: enabled={}",
+        settings.auto_update_enabled
+    );
 }
 
 /// Start background auto-update checker task
@@ -558,14 +600,17 @@ async fn perform_tailscale_update() -> anyhow::Result<bool> {
 
     match update_result {
         Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            let _stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
 
             if output.status.success() {
                 // Check if version changed
                 let new_version = get_current_version().await;
                 if new_version != current_version {
-                    info!("Tailscale updated from {:?} to {:?}", current_version, new_version);
+                    info!(
+                        "Tailscale updated from {:?} to {:?}",
+                        current_version, new_version
+                    );
                     return Ok(true);
                 }
                 return Ok(false);
@@ -637,8 +682,16 @@ async fn perform_manual_update() -> anyhow::Result<bool> {
                 tokio::fs::copy(&ts, TAILSCALE_PATH).await?;
                 tokio::fs::copy(&tsd, TAILSCALED_PATH).await?;
 
-                let _ = Command::new("chmod").arg("755").arg(TAILSCALE_PATH).status().await;
-                let _ = Command::new("chmod").arg("755").arg(TAILSCALED_PATH).status().await;
+                let _ = Command::new("chmod")
+                    .arg("755")
+                    .arg(TAILSCALE_PATH)
+                    .status()
+                    .await;
+                let _ = Command::new("chmod")
+                    .arg("755")
+                    .arg(TAILSCALED_PATH)
+                    .status()
+                    .await;
 
                 // Restart tailscaled
                 let _ = Command::new("sh")
@@ -659,7 +712,9 @@ async fn perform_manual_update() -> anyhow::Result<bool> {
         info!("Manual Tailscale update completed");
         Ok(true)
     } else {
-        Err(anyhow::anyhow!("Could not find tailscale binaries in download"))
+        Err(anyhow::anyhow!(
+            "Could not find tailscale binaries in download"
+        ))
     }
 }
 
@@ -668,16 +723,16 @@ async fn perform_manual_update() -> anyhow::Result<bool> {
 pub async fn get_auto_update_handler() -> impl IntoResponse {
     // Check if Tailscale is installed
     if !is_tailscale_installed() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "Tailscale not installed"})),
-        )
-            .into_response();
+        return Json(ApiResponse::<GetAutoUpdateRsp>::err(
+            -1,
+            "tailscale not installed",
+        ))
+        .into_response();
     }
 
     let enabled = AUTO_UPDATE_ENABLED.load(Ordering::SeqCst);
     info!("Tailscale auto-update status: {}", enabled);
-    Json(GetAutoUpdateRsp { enabled }).into_response()
+    Json(ApiResponse::ok(GetAutoUpdateRsp { enabled })).into_response()
 }
 
 /// HTTP handler to set auto-update status
@@ -685,11 +740,11 @@ pub async fn get_auto_update_handler() -> impl IntoResponse {
 pub async fn set_auto_update_handler(Json(req): Json<SetAutoUpdateReq>) -> impl IntoResponse {
     // Check if Tailscale is installed
     if !is_tailscale_installed() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "Tailscale not installed"})),
-        )
-            .into_response();
+        return Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "tailscale not installed",
+        ))
+        .into_response();
     }
 
     // Update in-memory state
@@ -707,18 +762,18 @@ pub async fn set_auto_update_handler(Json(req): Json<SetAutoUpdateReq>) -> impl 
     let _ = set_tailscale_auto_update(req.enabled).await;
 
     info!("Tailscale auto-update set to: {}", req.enabled);
-    StatusCode::OK.into_response()
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 /// HTTP handler to manually trigger an update check
 #[cfg(target_os = "linux")]
 pub async fn trigger_update_handler() -> impl IntoResponse {
     if !is_tailscale_installed() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "Tailscale not installed"})),
-        )
-            .into_response();
+        return Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "tailscale not installed",
+        ))
+        .into_response();
     }
 
     // Spawn update in background
@@ -737,22 +792,27 @@ pub async fn trigger_update_handler() -> impl IntoResponse {
         }
     });
 
-    Json(serde_json::json!({"status": "update_started"})).into_response()
+    Json(ApiResponse::ok(
+        serde_json::json!({"status": "update_started"}),
+    ))
+    .into_response()
 }
 
 /// HTTP handler to get Tailscale version info
 #[cfg(target_os = "linux")]
 pub async fn get_version_handler() -> impl IntoResponse {
     if !is_tailscale_installed() {
-        return Json(serde_json::json!({
+        return Json(ApiResponse::ok(serde_json::json!({
             "installed": false,
             "version": null
-        })).into_response();
+        })))
+        .into_response();
     }
 
     let version = get_current_version().await;
-    Json(serde_json::json!({
+    Json(ApiResponse::ok(serde_json::json!({
         "installed": true,
         "version": version
-    })).into_response()
+    })))
+    .into_response()
 }

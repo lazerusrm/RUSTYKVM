@@ -1,0 +1,16 @@
+{
+  "name": "nanokvm-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Playwright smoke tests for NanoKVM (nanokvm-rs).",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "codegen": "playwright codegen"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0"
+  }
+}
+

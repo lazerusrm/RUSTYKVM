@@ -1,4 +1,4 @@
-use axum::http::StatusCode;
+use crate::api::ApiResponse;
 use axum::{
     extract::{Json, Multipart},
     response::IntoResponse,
@@ -55,50 +55,61 @@ pub struct DownloadImageUrlReq {
 
 pub async fn image_enabled_handler() -> impl IntoResponse {
     let test_file = format!("{}/.testfile", DATA_DIR);
-    match fs::write(&test_file, b"test").await {
+    let enabled = match fs::write(&test_file, b"test").await {
         Ok(_) => {
             let _ = fs::remove_file(&test_file).await;
-            Json(ImageEnabledRsp { enabled: true })
+            true
         }
-        Err(_) => Json(ImageEnabledRsp { enabled: false }),
-    }
+        Err(_) => false,
+    };
+    Json(ApiResponse::ok(ImageEnabledRsp { enabled }))
 }
 
 pub async fn status_image_handler() -> impl IntoResponse {
-    if let Ok(content) = fs::read_to_string(SENTINEL_PATH).await {
+    let rsp = if let Ok(content) = fs::read_to_string(SENTINEL_PATH).await {
         let parts: Vec<&str> = content.split(';').collect();
         let file = parts.first().unwrap_or(&"").to_string();
         let percentage = parts.get(1).unwrap_or(&"").to_string();
 
-        Json(StatusImageRsp {
+        StatusImageRsp {
             status: "in_progress".to_string(),
             file,
             percentage,
-        })
+        }
     } else {
-        Json(StatusImageRsp {
+        StatusImageRsp {
             status: "idle".to_string(),
             file: "".to_string(),
             percentage: "".to_string(),
-        })
-    }
+        }
+    };
+    Json(ApiResponse::ok(rsp))
 }
 
 pub async fn upload_image_handler(mut multipart: Multipart) -> impl IntoResponse {
     if Path::new(SENTINEL_PATH).exists() {
-        return (StatusCode::CONFLICT, "Upload in progress").into_response();
+        return Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "upload in progress",
+        ))
+        .into_response();
     }
 
     let _ = fs::write(SENTINEL_PATH, b"start").await;
 
-    let mut guard = GuardOnDrop::new();
+    let guard = SentinelGuard::new(SENTINEL_PATH);
 
     while let Ok(Some(mut field)) = multipart.next_field().await {
         if let Some(file_name) = field.file_name() {
             let name = file_name.to_string();
             let name_lower = name.to_lowercase();
             if !name_lower.ends_with(".iso") && !name_lower.ends_with(".img") {
-                return (StatusCode::BAD_REQUEST, "Only .iso and .img allowed").into_response();
+                drop(guard);
+                return Json(ApiResponse::<serde_json::Value>::err(
+                    -1,
+                    "only .iso and .img allowed",
+                ))
+                .into_response();
             }
 
             let sanitized = sanitize_filename(&name);
@@ -108,7 +119,12 @@ pub async fn upload_image_handler(mut multipart: Multipart) -> impl IntoResponse
             let mut file = match fs::File::create(&dest_path).await {
                 Ok(f) => f,
                 Err(e) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+                    drop(guard);
+                    return Json(ApiResponse::<serde_json::Value>::err(
+                        -1,
+                        &format!("create failed: {}", e),
+                    ))
+                    .into_response();
                 }
             };
 
@@ -118,15 +134,21 @@ pub async fn upload_image_handler(mut multipart: Multipart) -> impl IntoResponse
             while let Ok(Some(chunk)) = field.chunk().await {
                 if total_written + chunk.len() as u64 > MAX_UPLOAD_SIZE {
                     let _ = fs::remove_file(&dest_path).await;
-                    return (StatusCode::BAD_REQUEST, "Upload exceeds 10GB limit").into_response();
+                    drop(guard);
+                    return Json(ApiResponse::<serde_json::Value>::err(
+                        -1,
+                        "upload exceeds 10GB limit",
+                    ))
+                    .into_response();
                 }
                 if let Err(e) = file.write_all(&chunk).await {
                     let _ = fs::remove_file(&dest_path).await;
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Write failed: {}", e),
-                    )
-                        .into_response();
+                    drop(guard);
+                    return Json(ApiResponse::<serde_json::Value>::err(
+                        -1,
+                        &format!("write failed: {}", e),
+                    ))
+                    .into_response();
                 }
                 total_written += chunk.len() as u64;
 
@@ -142,45 +164,51 @@ pub async fn upload_image_handler(mut multipart: Multipart) -> impl IntoResponse
 
             if name_lower.ends_with(".iso") && !is_iso9660(&dest_path).await {
                 let _ = fs::remove_file(&dest_path).await;
-                return (StatusCode::BAD_REQUEST, "Invalid ISO image").into_response();
+                drop(guard);
+                return Json(ApiResponse::<serde_json::Value>::err(
+                    -1,
+                    "invalid ISO image",
+                ))
+                .into_response();
             }
         }
     }
 
-    guard.disabled = true;
-    let _ = fs::remove_file(SENTINEL_PATH).await;
-    StatusCode::OK.into_response()
+    drop(guard);
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
-struct GuardOnDrop {
-    disabled: bool,
+struct SentinelGuard {
+    path: &'static str,
 }
 
-impl GuardOnDrop {
-    fn new() -> Self {
-        Self { disabled: false }
+impl SentinelGuard {
+    fn new(path: &'static str) -> Self {
+        Self { path }
     }
 }
 
-impl Drop for GuardOnDrop {
+impl Drop for SentinelGuard {
     fn drop(&mut self) {
-        if !self.disabled {
-            // We can't easily spawn a task in drop without a handle
-            // but we can try to use a dummy file or just leave it.
-            // In a real server, we might use a global cleanup task.
-        }
+        let _ = std::fs::remove_file(self.path);
     }
 }
 
 pub async fn download_image_url_handler(Json(req): Json<DownloadImageUrlReq>) -> impl IntoResponse {
     if Path::new(SENTINEL_PATH).exists() {
-        return (StatusCode::CONFLICT, "Upload in progress").into_response();
+        return Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "download in progress",
+        ))
+        .into_response();
     }
 
     let url_str = req.file.clone();
     let url = match url::Url::parse(&url_str) {
         Ok(u) => u,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Invalid URL").into_response(),
+        Err(_) => {
+            return Json(ApiResponse::<serde_json::Value>::err(-1, "invalid url")).into_response()
+        }
     };
 
     let raw_filename = url
@@ -206,11 +234,11 @@ pub async fn download_image_url_handler(Json(req): Json<DownloadImageUrlReq>) ->
         let _ = fs::remove_file(SENTINEL_PATH).await;
     });
 
-    Json(StatusImageRsp {
+    Json(ApiResponse::ok(StatusImageRsp {
         status: "in_progress".to_string(),
         file: req.file,
         percentage: "0%".to_string(),
-    })
+    }))
     .into_response()
 }
 

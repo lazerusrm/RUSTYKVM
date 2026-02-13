@@ -147,27 +147,39 @@ INIT_SCRIPT="$MOUNT_POINT/etc/init.d/S95nanokvm"
 log_info "Creating init script..."
 cat > "$INIT_SCRIPT" << 'INITEOF'
 #!/bin/sh
+# NanoKVM-RS init script (hardened)
 export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
 DAEMON=/kvmapp/nanokvm-server
 PIDFILE=/var/run/nanokvm.pid
 LOGFILE=/var/log/nanokvm.log
 
+is_running() {
+  [ -f "$PIDFILE" ] || return 1
+  PID="$(cat "$PIDFILE" 2>/dev/null)"
+  [ -n "$PID" ] || return 1
+  kill -0 "$PID" 2>/dev/null
+}
+
 case "$1" in
   start)
     echo "Starting NanoKVM-RS..."
     cd /kvmapp
-    $DAEMON >> $LOGFILE 2>&1 &
-    echo $! > $PIDFILE
+    start-stop-daemon -S -b -m -p "$PIDFILE" -a "$DAEMON" -- >> "$LOGFILE" 2>&1
+    sleep 1
+    is_running || exit 1
     ;;
   stop)
-    if [ -f $PIDFILE ]; then
-      kill $(cat $PIDFILE) 2>/dev/null
-      rm -f $PIDFILE
+    if [ -f "$PIDFILE" ]; then
+      start-stop-daemon -K -p "$PIDFILE" -s TERM 2>/dev/null || true
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        is_running || break
+        sleep 0.5
+      done
+      rm -f "$PIDFILE"
     fi
     ;;
   restart)
     $0 stop
-    sleep 1
     $0 start
     ;;
   *)

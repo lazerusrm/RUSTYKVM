@@ -75,8 +75,17 @@ impl AsRef<[u8]> for KvmFrame {
 
 impl KvmFrame {
     fn new(ptr: *mut u8, len: usize, frame_type: H264FrameType) -> Self {
-        tracing::debug!("KvmFrame::new() - created buffer at {:p}, len={}, type={:?}", ptr, len, frame_type);
-        Self { ptr, len, frame_type }
+        tracing::debug!(
+            "KvmFrame::new() - created buffer at {:p}, len={}, type={:?}",
+            ptr,
+            len,
+            frame_type
+        );
+        Self {
+            ptr,
+            len,
+            frame_type,
+        }
     }
 
     /// Returns the length of the frame in bytes
@@ -419,48 +428,6 @@ impl Kvm {
         if self.is_ready() {
             kvm_sys::set_frame_detect(frame);
         }
-    }
-
-    /// Get the current SPS (Sequence Parameter Set) from the encoder
-    /// Returns the SPS data as Bytes, or None if not available
-    pub fn get_sps(&self) -> Option<Bytes> {
-        if !self.is_ready() {
-            return None;
-        }
-
-        let mut data_ptr: *mut u8 = ptr::null_mut();
-        let mut size: u32 = 0;
-
-        let ret = kvm_sys::kvmv_get_sps_frame(&mut data_ptr, &mut size);
-
-        if ret < 0 || data_ptr.is_null() || size == 0 {
-            return None;
-        }
-
-        // Copy the data since it's from an internal buffer we shouldn't free
-        let slice = unsafe { std::slice::from_raw_parts(data_ptr, size as usize) };
-        Some(Bytes::copy_from_slice(slice))
-    }
-
-    /// Get the current PPS (Picture Parameter Set) from the encoder
-    /// Returns the PPS data as Bytes, or None if not available
-    pub fn get_pps(&self) -> Option<Bytes> {
-        if !self.is_ready() {
-            return None;
-        }
-
-        let mut data_ptr: *mut u8 = ptr::null_mut();
-        let mut size: u32 = 0;
-
-        let ret = kvm_sys::kvmv_get_pps_frame(&mut data_ptr, &mut size);
-
-        if ret < 0 || data_ptr.is_null() || size == 0 {
-            return None;
-        }
-
-        // Copy the data since it's from an internal buffer we shouldn't free
-        let slice = unsafe { std::slice::from_raw_parts(data_ptr, size as usize) };
-        Some(Bytes::copy_from_slice(slice))
     }
 
     pub fn set_hdmi(&self, enable: bool) -> Result<(), KvmError> {

@@ -1,0 +1,47 @@
+name: E2E Smoke (Self-Hosted)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    name: Playwright Smoke (device)
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 15
+    env:
+      NANOKVM_BASE_URL: ${{ secrets.NANOKVM_BASE_URL }}
+      NANOKVM_USER: ${{ secrets.NANOKVM_USER }}
+      NANOKVM_PASS: ${{ secrets.NANOKVM_PASS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install E2E deps
+        working-directory: e2e
+        run: npm ci
+
+      - name: Install Playwright browser (Chromium only)
+        working-directory: e2e
+        run: npx playwright install chromium
+
+      - name: Run smoke tests
+        working-directory: e2e
+        run: npm test
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-smoke-results
+          path: |
+            e2e/test-results
+            e2e/playwright-report
+          if-no-files-found: ignore

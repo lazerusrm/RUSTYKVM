@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 static X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 static X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
+use crate::api::ApiResponse;
 use crate::utils::{decrypt_password, get_secret_key};
 use crate::AppState;
 use bcrypt::{hash, verify, DEFAULT_COST};
@@ -90,32 +91,6 @@ pub struct GetAccountRsp {
 #[derive(Debug, Serialize)]
 pub struct EncryptionKeyRsp {
     pub key: String,
-}
-
-/// API response wrapper matching Go server format
-#[derive(Debug, Serialize)]
-pub struct ApiResponse<T: Serialize> {
-    pub code: i32,
-    pub msg: String,
-    pub data: Option<T>,
-}
-
-impl<T: Serialize> ApiResponse<T> {
-    pub fn ok(data: T) -> Self {
-        Self {
-            code: 0,
-            msg: "success".to_string(),
-            data: Some(data),
-        }
-    }
-
-    pub fn err(code: i32, msg: &str) -> ApiResponse<()> {
-        ApiResponse {
-            code,
-            msg: msg.to_string(),
-            data: None,
-        }
-    }
 }
 
 pub async fn get_account() -> Account {
@@ -208,7 +183,7 @@ pub async fn login_handler(
         Ok(token) => {
             let cookie = Cookie::build((COOKIE_NAME, token.clone()))
                 .path("/")
-                .http_only(false)  // Must be false so frontend JS can read it for route protection
+                .http_only(false) // Must be false so frontend JS can read it for route protection
                 .same_site(SameSite::Lax)
                 .build();
 
@@ -232,7 +207,11 @@ pub async fn logout_handler(jar: CookieJar) -> impl IntoResponse {
         .max_age(Duration::ZERO.try_into().unwrap())
         .same_site(SameSite::Lax)
         .build();
-    jar.add(cookie)
+    (
+        jar.add(cookie),
+        Json(ApiResponse::<serde_json::Value>::ok_empty()),
+    )
+        .into_response()
 }
 
 pub async fn change_password_handler(

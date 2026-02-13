@@ -19,11 +19,31 @@ pub struct QualityTier {
 
 /// Predefined quality tiers from highest to lowest
 pub const QUALITY_TIERS: [QualityTier; 5] = [
-    QualityTier { name: "ultra", h264_bitrate: 4000, mjpeg_quality: 95 },
-    QualityTier { name: "high", h264_bitrate: 2500, mjpeg_quality: 80 },
-    QualityTier { name: "medium", h264_bitrate: 1500, mjpeg_quality: 65 },
-    QualityTier { name: "low", h264_bitrate: 800, mjpeg_quality: 45 },
-    QualityTier { name: "lowest", h264_bitrate: 400, mjpeg_quality: 30 },
+    QualityTier {
+        name: "ultra",
+        h264_bitrate: 4000,
+        mjpeg_quality: 95,
+    },
+    QualityTier {
+        name: "high",
+        h264_bitrate: 2500,
+        mjpeg_quality: 80,
+    },
+    QualityTier {
+        name: "medium",
+        h264_bitrate: 1500,
+        mjpeg_quality: 65,
+    },
+    QualityTier {
+        name: "low",
+        h264_bitrate: 800,
+        mjpeg_quality: 45,
+    },
+    QualityTier {
+        name: "lowest",
+        h264_bitrate: 400,
+        mjpeg_quality: 30,
+    },
 ];
 
 /// Default starting tier (high quality)

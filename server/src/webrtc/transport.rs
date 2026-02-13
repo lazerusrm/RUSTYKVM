@@ -456,6 +456,13 @@ impl PeerConnectionManager {
         })
     }
 
+    pub fn has_h264_parameter_sets(&self, source_id: &str) -> bool {
+        self.h264_parameter_sets
+            .read()
+            .get(source_id)
+            .is_some_and(|sets| !sets.sps.is_empty() && !sets.pps.is_empty())
+    }
+
     pub fn update_h264_parameter_sets(&self, source_id: &str, sps: Bytes, pps: Bytes) {
         if !sps.is_empty() && !pps.is_empty() {
             self.h264_parameter_sets
@@ -1087,6 +1094,32 @@ fn find_nal_units(data: &[u8]) -> Vec<&[u8]> {
         units.push(data);
     }
     units
+}
+
+/// Extract SPS and PPS NAL units from an H.264 Annex B stream.
+///
+/// The NanoKVM encoder typically prepends SPS/PPS before I-frames; this helper
+/// pulls them out so we can advertise `sprop-parameter-sets` in SDP.
+pub fn extract_h264_parameter_sets(data: &[u8]) -> (Option<Bytes>, Option<Bytes>) {
+    let mut sps: Option<Bytes> = None;
+    let mut pps: Option<Bytes> = None;
+
+    for unit in find_nal_units(data) {
+        if unit.is_empty() {
+            continue;
+        }
+        let nal_type = unit[0] & 0x1F;
+        match nal_type {
+            7 => sps = Some(Bytes::copy_from_slice(unit)),
+            8 => pps = Some(Bytes::copy_from_slice(unit)),
+            _ => {}
+        }
+        if sps.is_some() && pps.is_some() {
+            break;
+        }
+    }
+
+    (sps, pps)
 }
 
 fn strip_annex_b(data: &[u8]) -> &[u8] {

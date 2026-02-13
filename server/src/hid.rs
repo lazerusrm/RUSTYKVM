@@ -1,5 +1,5 @@
+use crate::api::ApiResponse;
 use crate::AppState;
-use axum::http::StatusCode;
 use axum::{
     extract::{Json, State},
     response::IntoResponse,
@@ -12,6 +12,8 @@ use uuid::Uuid;
 #[derive(Debug, Deserialize)]
 pub struct PasteReq {
     pub content: String,
+    // Frontend sends `langue` (typo). Keep compatibility with both spellings.
+    #[serde(rename = "langue", alias = "language", default)]
     pub language: Option<String>,
 }
 
@@ -41,14 +43,30 @@ pub struct SetHidModeReq {
 }
 
 const SHORTCUT_FILE: &str = "/etc/kvm/shortcuts.json";
+const LEADER_KEY_FILE: &str = "/etc/kvm/leader-key";
 const HID_MODE_FLAG: &str = "/sys/kernel/config/usb_gadget/g0/bcdDevice";
+
+#[derive(Debug, Deserialize)]
+pub struct SetLeaderKeyReq {
+    #[serde(default)]
+    pub key: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetLeaderKeyRsp {
+    pub key: String,
+}
 
 pub async fn paste_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PasteReq>,
 ) -> impl IntoResponse {
     if req.content.len() > 1024 {
-        return (StatusCode::BAD_REQUEST, "Content too long").into_response();
+        return Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "content too long",
+        ))
+        .into_response();
     }
 
     let char_map = get_char_map(req.language.as_deref().unwrap_or(""));
@@ -65,12 +83,12 @@ pub async fn paste_handler(
         }
     }
 
-    StatusCode::OK.into_response()
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 pub async fn get_shortcuts_handler() -> impl IntoResponse {
     let shortcuts = load_shortcuts().await.unwrap_or_default();
-    Json(GetShortcutsRsp { shortcuts })
+    Json(ApiResponse::ok(GetShortcutsRsp { shortcuts }))
 }
 
 pub async fn add_shortcut_handler(Json(req): Json<AddShortcutReq>) -> impl IntoResponse {
@@ -82,7 +100,7 @@ pub async fn add_shortcut_handler(Json(req): Json<AddShortcutReq>) -> impl IntoR
     shortcuts.push(new_shortcut);
     let json = serde_json::to_string(&shortcuts).unwrap();
     let _ = tokio::fs::write(SHORTCUT_FILE, json).await;
-    StatusCode::OK
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 pub async fn delete_shortcut_handler(Json(req): Json<DeleteShortcutReq>) -> impl IntoResponse {
@@ -91,9 +109,9 @@ pub async fn delete_shortcut_handler(Json(req): Json<DeleteShortcutReq>) -> impl
     shortcuts.retain(|s| s.id != req.id);
     if shortcuts.len() != original_len {
         let _ = save_shortcuts(&shortcuts).await;
-        StatusCode::OK.into_response()
+        Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
     } else {
-        StatusCode::NOT_FOUND.into_response()
+        Json(ApiResponse::<serde_json::Value>::err(-1, "not found")).into_response()
     }
 }
 
@@ -105,12 +123,16 @@ pub async fn get_hid_mode_handler() -> impl IntoResponse {
                 "0x0623" => "hid-only",
                 _ => "unknown",
             };
-            Json(GetHidModeRsp {
+            Json(ApiResponse::ok(GetHidModeRsp {
                 mode: mode.to_string(),
-            })
+            }))
             .into_response()
         }
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read HID mode").into_response(),
+        Err(e) => Json(ApiResponse::<GetHidModeRsp>::err(
+            -1,
+            &format!("failed: {}", e),
+        ))
+        .into_response(),
     }
 }
 
@@ -118,7 +140,13 @@ pub async fn set_hid_mode_handler(Json(req): Json<SetHidModeReq>) -> impl IntoRe
     let src = match req.mode.as_str() {
         "normal" => "/kvmapp/system/init.d/S03usbdev",
         "hid-only" => "/kvmapp/system/init.d/S03usbhid",
-        _ => return StatusCode::BAD_REQUEST.into_response(),
+        _ => {
+            return Json(ApiResponse::<serde_json::Value>::err(
+                -1,
+                "invalid arguments",
+            ))
+            .into_response()
+        }
     };
 
     let dst = "/etc/init.d/S03usbdev";
@@ -131,9 +159,9 @@ pub async fn set_hid_mode_handler(Json(req): Json<SetHidModeReq>) -> impl IntoRe
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let _ = std::process::Command::new("reboot").status();
         });
-        StatusCode::OK.into_response()
+        Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
     } else {
-        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        Json(ApiResponse::<serde_json::Value>::err(-1, "failed")).into_response()
     }
 }
 
@@ -142,7 +170,58 @@ pub async fn reset_hid_handler() -> impl IntoResponse {
         .arg("-c")
         .arg("/etc/init.d/S03usbdev restart_phy")
         .status();
-    StatusCode::OK
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
+}
+
+pub async fn set_leader_key_handler(Json(req): Json<SetLeaderKeyReq>) -> impl IntoResponse {
+    let key = req.key.trim().to_string();
+    if key.is_empty() {
+        match tokio::fs::remove_file(LEADER_KEY_FILE).await {
+            Ok(()) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
+            }
+            Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+                -1,
+                &format!("reset failed: {e}"),
+            ))
+            .into_response(),
+        }
+    } else {
+        match tokio::fs::write(LEADER_KEY_FILE, key).await {
+            Ok(()) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+            Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+                -1,
+                &format!("write failed: {e}"),
+            ))
+            .into_response(),
+        }
+    }
+}
+
+pub async fn get_leader_key_handler() -> impl IntoResponse {
+    match tokio::fs::read_to_string(LEADER_KEY_FILE).await {
+        Ok(s) => Json(ApiResponse::ok(GetLeaderKeyRsp {
+            key: s.trim().to_string(),
+        }))
+        .into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Json(ApiResponse::ok(GetLeaderKeyRsp {
+                key: "".to_string(),
+            }))
+            .into_response()
+        }
+        Err(e) => Json(ApiResponse::<GetLeaderKeyRsp>::err(
+            -1,
+            &format!("read failed: {e}"),
+        ))
+        .into_response(),
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct ShortcutStore {
+    shortcuts: Vec<Shortcut>,
 }
 
 async fn load_shortcuts() -> anyhow::Result<Vec<Shortcut>> {
@@ -150,12 +229,23 @@ async fn load_shortcuts() -> anyhow::Result<Vec<Shortcut>> {
         return Ok(Vec::new());
     }
     let content = tokio::fs::read_to_string(SHORTCUT_FILE).await?;
-    let shortcuts: Vec<Shortcut> = serde_json::from_str(&content)?;
-    Ok(shortcuts)
+    if content.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Go (>=2.3.2) stores {"shortcuts":[...]}.
+    // Older Rust builds stored a raw JSON array.
+    if let Ok(store) = serde_json::from_str::<ShortcutStore>(&content) {
+        return Ok(store.shortcuts);
+    }
+    Ok(serde_json::from_str::<Vec<Shortcut>>(&content)?)
 }
 
 async fn save_shortcuts(shortcuts: &[Shortcut]) -> anyhow::Result<()> {
-    let json = serde_json::to_string(shortcuts)?;
+    // Match Go's on-disk format for compatibility across upgrades.
+    let json = serde_json::to_string(&ShortcutStore {
+        shortcuts: shortcuts.to_vec(),
+    })?;
     tokio::fs::write(SHORTCUT_FILE, json).await?;
     Ok(())
 }

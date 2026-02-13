@@ -1,4 +1,5 @@
 use hid::HidEngine;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
@@ -10,11 +11,28 @@ const JIGGLER_INTERVAL: Duration = Duration::from_secs(15);
 
 pub struct MouseJiggler {
     hid: Arc<Mutex<HidEngine>>,
+    last_activity_ms: Arc<AtomicU64>,
 }
 
 impl MouseJiggler {
     pub fn new(hid: Arc<Mutex<HidEngine>>) -> Self {
-        Self { hid }
+        // Initialize as "recently active" to avoid an immediate jiggle on boot.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        Self {
+            hid,
+            last_activity_ms: Arc::new(AtomicU64::new(now_ms)),
+        }
+    }
+
+    pub fn update_activity(&self) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.last_activity_ms.store(now_ms, Ordering::Relaxed);
     }
 
     pub async fn is_enabled(&self) -> bool {
@@ -40,6 +58,7 @@ impl MouseJiggler {
 
     pub async fn spawn_loop(&self) {
         let hid = self.hid.clone();
+        let last_activity_ms = self.last_activity_ms.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(JIGGLER_INTERVAL);
@@ -47,6 +66,16 @@ impl MouseJiggler {
                 interval.tick().await;
 
                 if fs::metadata(JIGGLER_CONFIG_FILE).await.is_ok() {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let last_ms = last_activity_ms.load(Ordering::Relaxed);
+                    // Skip jiggle if user has interacted recently.
+                    if now_ms.saturating_sub(last_ms) < JIGGLER_INTERVAL.as_millis() as u64 {
+                        continue;
+                    }
+
                     let mode = match fs::read_to_string(JIGGLER_CONFIG_FILE).await {
                         Ok(c) => c.trim().to_string(),
                         Err(_) => "relative".to_string(),

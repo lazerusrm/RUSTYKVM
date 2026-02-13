@@ -10,6 +10,8 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -89,6 +91,58 @@ async fn handle_ws_signaling(socket: WebSocket, state: Arc<AppState>) {
                         sdp_type: "offer".to_string(),
                         sdp,
                     };
+
+                    // Make sure we have SPS/PPS before we build the local SDP.
+                    // Our SDP includes `sprop-parameter-sets`, which the browser
+                    // expects for H.264 decoding.
+                    #[cfg(target_os = "linux")]
+                    {
+                        if !webrtc_mgr.has_h264_parameter_sets("default") {
+                            let (width, height, bitrate) = {
+                                let cfg = state.screen_config.read();
+                                (cfg.width, cfg.height, cfg.bitrate)
+                            };
+
+                            let capture_state = state.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                let start = std::time::Instant::now();
+                                let mut last_err: Option<String> = None;
+
+                                while start.elapsed() < Duration::from_secs(2) {
+                                    match capture_state.kvm.get_h264(width, height, bitrate) {
+                                        Ok(frame) => {
+                                            let data = frame.into_bytes();
+                                            let (sps, pps) = crate::webrtc::transport::extract_h264_parameter_sets(&data);
+                                            if let (Some(sps), Some(pps)) = (sps, pps) {
+                                                return Ok::<(bytes::Bytes, bytes::Bytes), String>((sps, pps));
+                                            }
+                                        }
+                                        Err(e) => last_err = Some(e.to_string()),
+                                    }
+                                    std::thread::sleep(Duration::from_millis(30));
+                                }
+
+                                Err(last_err.unwrap_or_else(|| "timeout waiting for SPS/PPS".to_string()))
+                            })
+                            .await
+                            {
+                                Ok(Ok((sps, pps))) => {
+                                    info!(
+                                        "H.264 parameter sets primed for SDP negotiation: SPS {} bytes, PPS {} bytes",
+                                        sps.len(),
+                                        pps.len()
+                                    );
+                                    webrtc_mgr.update_h264_parameter_sets("default", sps, pps);
+                                }
+                                Ok(Err(e)) => {
+                                    warn!("Unable to prime H.264 parameter sets (continuing): {}", e);
+                                }
+                                Err(e) => {
+                                    warn!("H.264 parameter set prefetch task join error (continuing): {}", e);
+                                }
+                            }
+                        }
+                    }
 
                     match webrtc_mgr.handle_offer("default", offer).await {
                         Ok((answer, mut handle)) => {

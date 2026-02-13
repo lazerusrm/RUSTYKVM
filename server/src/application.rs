@@ -1,4 +1,4 @@
-use axum::http::StatusCode;
+use crate::api::ApiResponse;
 use axum::{
     extract::{Json, Multipart},
     response::IntoResponse,
@@ -53,12 +53,12 @@ pub async fn get_version_handler() -> impl IntoResponse {
         Ok(info) => info.version,
         Err(_) => current.clone(),
     };
-    Json(GetVersionRsp { current, latest })
+    Json(ApiResponse::ok(GetVersionRsp { current, latest }))
 }
 
 pub async fn get_preview_handler() -> impl IntoResponse {
     let enabled = Path::new(PREVIEW_FLAG).exists();
-    Json(GetPreviewRsp { enabled })
+    Json(ApiResponse::ok(GetPreviewRsp { enabled }))
 }
 
 pub async fn set_preview_handler(Json(req): Json<SetPreviewReq>) -> impl IntoResponse {
@@ -67,12 +67,16 @@ pub async fn set_preview_handler(Json(req): Json<SetPreviewReq>) -> impl IntoRes
     } else {
         let _ = tokio::fs::remove_file(PREVIEW_FLAG).await;
     }
-    StatusCode::OK
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 pub async fn offline_update_handler(mut multipart: Multipart) -> impl IntoResponse {
     if IS_UPDATING.swap(true, Ordering::SeqCst) {
-        return (StatusCode::CONFLICT, "Update already in progress").into_response();
+        return Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "update already in progress",
+        ))
+        .into_response();
     }
 
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -90,13 +94,19 @@ pub async fn offline_update_handler(mut multipart: Multipart) -> impl IntoRespon
                         .arg("/etc/init.d/S95nanokvm restart")
                         .status();
                 });
-                return StatusCode::ACCEPTED.into_response();
+                // Go-style API always returns HTTP 200 with `{code,msg,data}`.
+                // Frontend offline updater incorrectly checks `!rsp.data`, so return `{}`.
+                return Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response();
             }
         }
     }
 
     IS_UPDATING.store(false, Ordering::SeqCst);
-    StatusCode::BAD_REQUEST.into_response()
+    Json(ApiResponse::<serde_json::Value>::err(
+        -1,
+        "no file uploaded",
+    ))
+    .into_response()
 }
 
 async fn get_latest_info() -> anyhow::Result<LatestInfo> {
@@ -120,7 +130,11 @@ async fn get_latest_info() -> anyhow::Result<LatestInfo> {
 
 pub async fn update_handler() -> impl IntoResponse {
     if IS_UPDATING.swap(true, Ordering::SeqCst) {
-        return (StatusCode::CONFLICT, "Update already in progress").into_response();
+        return Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "update already in progress",
+        ))
+        .into_response();
     }
 
     tokio::spawn(async move {
@@ -140,7 +154,7 @@ pub async fn update_handler() -> impl IntoResponse {
         IS_UPDATING.store(false, Ordering::SeqCst);
     });
 
-    StatusCode::ACCEPTED.into_response()
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 async fn perform_update() -> anyhow::Result<()> {

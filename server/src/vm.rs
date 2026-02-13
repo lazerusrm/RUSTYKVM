@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
+use crate::api::ApiResponse;
 use crate::AppState;
-use axum::http::StatusCode;
 use axum::{
     extract::{
         ws::{Message, WebSocket},
@@ -24,9 +24,9 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 #[derive(Debug, Deserialize)]
 pub struct SetGpioReq {
-    #[serde(rename = "Type")]
+    #[serde(rename = "type", alias = "Type")]
     pub gpio_type: String, // reset / power
-    #[serde(rename = "Duration", default = "default_duration")]
+    #[serde(rename = "duration", alias = "Duration", default = "default_duration")]
     pub duration: u64, // press time (unit: milliseconds)
 }
 
@@ -103,10 +103,15 @@ pub struct GetScriptsRsp {
     pub files: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct UploadScriptRsp {
+    pub file: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RunScriptReq {
     pub name: String,
-    #[serde(rename = "Type")]
+    #[serde(rename = "type", alias = "Type")]
     pub script_type: String, // foreground | background
 }
 
@@ -189,6 +194,7 @@ pub struct UploadAutostartReq {
 const OLED_EXIST_FILE: &str = "/etc/kvm/oled_exist";
 const OLED_SLEEP_FILE: &str = "/etc/kvm/oled_sleep";
 const SCRIPT_DIRECTORY: &str = "/etc/kvm/scripts";
+const GOMEMLIMIT_FILE: &str = "/etc/kvm/GOMEMLIMIT";
 
 const VIRTUAL_NETWORK: &str = "/boot/usb.rndis0";
 const VIRTUAL_DISK: &str = "/boot/usb.disk0";
@@ -208,6 +214,18 @@ const WEB_TITLE_FILE: &str = "/etc/kvm/web-title";
 const AUTOSTART_DIRECTORY: &str = "/etc/kvm/autostart";
 const HDMI_DISABLE_FILE: &str = "/etc/kvm/hdmi_disable";
 const INITTAB_PATH: &str = "/etc/inittab";
+
+#[derive(Debug, Serialize)]
+pub struct GetMemoryLimitRsp {
+    pub enabled: bool,
+    pub limit: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetMemoryLimitReq {
+    pub enabled: bool,
+    pub limit: i64,
+}
 
 fn sanitize_file_name(file_name: &str) -> Option<String> {
     let sanitized: String = file_name
@@ -246,8 +264,9 @@ async fn run_shell_command(cmd: &str) -> bool {
 
 #[derive(Debug, Deserialize)]
 pub struct SetScreenReq {
-    #[serde(rename = "Type")]
+    #[serde(rename = "type", alias = "Type")]
     pub screen_type: String, // resolution / fps / quality / type / gop
+    #[serde(rename = "value", alias = "Value")]
     pub value: i32,
 }
 
@@ -271,7 +290,13 @@ pub async fn set_screen_handler(
         "quality" => Some((SCREEN_QUALITY_FILE, req.value.to_string())),
         "resolution" => Some((SCREEN_RES_FILE, req.value.to_string())),
         "gop" => None,
-        _ => return StatusCode::BAD_REQUEST.into_response(),
+        _ => {
+            return Json(ApiResponse::<serde_json::Value>::err(
+                -1,
+                "invalid arguments",
+            ))
+            .into_response();
+        }
     };
 
     // Do file write without holding the lock
@@ -291,43 +316,86 @@ pub async fn set_screen_handler(
                 };
             }
             "fps" => {
-                config.fps = req.value as u16;
+                let fps = req.value.clamp(1, 60) as u16;
+                config.fps = fps;
             }
             "quality" => {
-                config.quality = req.value as u16;
+                // UI sends 50-100 for MJPEG, and 1000-5000 for H.264 bitrate.
+                if req.value <= 100 {
+                    config.quality = req.value.clamp(1, 100) as u16;
+                } else {
+                    config.bitrate = req.value.clamp(100, 20_000) as u16;
+                }
             }
             "gop" => {
-                config.gop = req.value as u8;
+                config.gop = req.value.clamp(1, 100) as u8;
                 state.kvm.set_h264_gop(config.gop);
             }
-            "resolution" => match req.value {
-                0 => {
-                    config.width = 1280;
-                    config.height = 720;
-                }
-                1 => {
-                    config.width = 1920;
-                    config.height = 1080;
-                }
-                2 => {
-                    config.width = 1024;
-                    config.height = 768;
-                }
-                3 => {
-                    config.width = 800;
-                    config.height = 600;
-                }
-                4 => {
-                    config.width = 640;
-                    config.height = 480;
-                }
-                _ => {}
-            },
+            "resolution" => {
+                // Frontend sends the height as the value:
+                // 0(auto), 1080, 720, 600, 480.
+                // Keep a small compatibility shim for older index-based values.
+                let (w, h) = match req.value {
+                    0 => (0, 0),
+                    1080 | 1 => (1920, 1080),
+                    720 | 2 => (1280, 720),
+                    600 | 3 => (800, 600),
+                    480 | 4 => (640, 480),
+                    _ => (config.width, config.height),
+                };
+                config.width = w;
+                config.height = h;
+            }
             _ => {}
         }
     }
 
-    StatusCode::OK.into_response()
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
+}
+
+pub async fn get_memory_limit_handler() -> impl IntoResponse {
+    let exist = std::path::Path::new(GOMEMLIMIT_FILE).exists();
+    if !exist {
+        return Json(ApiResponse::ok(GetMemoryLimitRsp {
+            enabled: false,
+            limit: 0,
+        }))
+        .into_response();
+    }
+
+    match tokio::fs::read_to_string(GOMEMLIMIT_FILE).await {
+        Ok(content) => {
+            let limit = content.trim().parse::<i64>().unwrap_or(0);
+            Json(ApiResponse::ok(GetMemoryLimitRsp {
+                enabled: true,
+                limit,
+            }))
+            .into_response()
+        }
+        Err(e) => Json(ApiResponse::<GetMemoryLimitRsp>::err(
+            -1,
+            &format!("failed to read memory limit: {}", e),
+        ))
+        .into_response(),
+    }
+}
+
+pub async fn set_memory_limit_handler(Json(req): Json<SetMemoryLimitReq>) -> impl IntoResponse {
+    if req.enabled {
+        let limit = req.limit.max(50);
+        let _ = tokio::fs::create_dir_all("/etc/kvm").await;
+        if let Err(e) = tokio::fs::write(GOMEMLIMIT_FILE, limit.to_string()).await {
+            return Json(ApiResponse::<serde_json::Value>::err(
+                -2,
+                &format!("failed to set memory limit: {}", e),
+            ))
+            .into_response();
+        }
+    } else {
+        let _ = tokio::fs::remove_file(GOMEMLIMIT_FILE).await;
+    }
+
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -367,16 +435,16 @@ pub async fn set_tls_handler(
                     .status()
                     .await;
             });
-            StatusCode::OK.into_response()
+            Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
     }
 }
 
 pub async fn set_oled_handler(Json(req): Json<SetOledReq>) -> impl IntoResponse {
     match tokio::fs::write(OLED_SLEEP_FILE, req.sleep.to_string()).await {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
     }
 }
 
@@ -392,7 +460,7 @@ pub async fn get_oled_handler() -> impl IntoResponse {
         }
     }
 
-    Json(GetOLEDRsp { exist, sleep })
+    Json(ApiResponse::ok(GetOLEDRsp { exist, sleep }))
 }
 
 pub async fn get_info_handler() -> impl IntoResponse {
@@ -447,13 +515,13 @@ pub async fn get_info_handler() -> impl IntoResponse {
         .trim()
         .to_string();
 
-    Json(GetInfoRsp {
+    Json(ApiResponse::ok(GetInfoRsp {
         ips,
         mdns,
         image,
         application,
         device_key,
-    })
+    }))
 }
 
 #[cfg(target_os = "linux")]
@@ -464,9 +532,9 @@ pub async fn get_hardware_handler(State(state): State<Arc<AppState>>) -> impl In
         vm::HardwareVersion::Pcie => "PCIE",
     };
 
-    Json(GetHardwareRsp {
+    Json(ApiResponse::ok(GetHardwareRsp {
         version: version.to_string(),
-    })
+    }))
 }
 
 #[cfg(target_os = "linux")]
@@ -480,19 +548,23 @@ pub async fn set_gpio_handler(
         "power" => state.vm.power_press(req.duration).await,
         "reset" => state.vm.reset_press(req.duration).await,
         _ => {
-            return (StatusCode::BAD_REQUEST, "Invalid GPIO type").into_response();
+            return Json(ApiResponse::<serde_json::Value>::err(
+                -1,
+                "invalid gpio type",
+            ))
+            .into_response();
         }
     };
 
     match result {
-        Ok(_) => StatusCode::OK.into_response(),
+        Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
         Err(e) => {
             error!("GPIO control failed: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("GPIO error: {}", e),
-            )
-                .into_response()
+            Json(ApiResponse::<serde_json::Value>::err(
+                -1,
+                &format!("gpio error: {}", e),
+            ))
+            .into_response()
         }
     }
 }
@@ -502,7 +574,7 @@ pub async fn get_gpio_handler(State(state): State<Arc<AppState>>) -> impl IntoRe
     let pwr = state.vm.get_power_led().await.unwrap_or(false);
     let hdd = state.vm.get_hdd_led().await.unwrap_or(false);
 
-    Json(GetGpioRsp { pwr, hdd })
+    Json(ApiResponse::ok(GetGpioRsp { pwr, hdd }))
 }
 
 #[cfg(target_os = "linux")]
@@ -510,7 +582,7 @@ pub async fn get_jiggler_handler(State(state): State<Arc<AppState>>) -> impl Int
     let enabled = state.jiggler.is_enabled().await;
     let mode = state.jiggler.get_mode().await;
 
-    Json(GetMouseJigglerRsp { enabled, mode })
+    Json(ApiResponse::ok(GetMouseJigglerRsp { enabled, mode }))
 }
 
 #[cfg(target_os = "linux")]
@@ -533,8 +605,8 @@ pub async fn set_jiggler_handler(
     };
 
     match res {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
     }
 }
 
@@ -666,18 +738,26 @@ pub async fn get_scripts_handler() -> impl IntoResponse {
             }
         }
     }
-    Json(GetScriptsRsp { files })
+    Json(ApiResponse::ok(GetScriptsRsp { files }))
 }
 
 pub async fn upload_script_handler(mut multipart: Multipart) -> impl IntoResponse {
     let _ = tokio::fs::create_dir_all(SCRIPT_DIRECTORY).await;
+    let mut uploaded_file: Option<String> = None;
     while let Ok(Some(field)) = multipart.next_field().await {
         if let Some(file_name) = field.file_name() {
             let name_lower = file_name.to_lowercase();
             if name_lower.ends_with(".sh") || name_lower.ends_with(".py") {
                 if let Some(path) = validate_script_path(SCRIPT_DIRECTORY, file_name) {
                     if let Ok(data) = field.bytes().await {
-                        let _ = tokio::fs::write(&path, data).await;
+                        if tokio::fs::write(&path, data).await.is_ok() {
+                            uploaded_file = Some(
+                                path.file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string(),
+                            );
+                        }
                         #[cfg(target_os = "linux")]
                         let _ =
                             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
@@ -686,15 +766,30 @@ pub async fn upload_script_handler(mut multipart: Multipart) -> impl IntoRespons
             }
         }
     }
-    StatusCode::OK
+    match uploaded_file {
+        Some(file) => Json(ApiResponse::ok(UploadScriptRsp { file })).into_response(),
+        None => Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "no file uploaded",
+        ))
+        .into_response(),
+    }
 }
 
 pub async fn run_script_handler(Json(req): Json<RunScriptReq>) -> impl IntoResponse {
     let Some(path) = validate_script_path(SCRIPT_DIRECTORY, &req.name) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "invalid arguments",
+        ))
+        .into_response();
     };
     if !path.exists() {
-        return StatusCode::NOT_FOUND.into_response();
+        return Json(ApiResponse::<serde_json::Value>::err(
+            -2,
+            "script not found",
+        ))
+        .into_response();
     }
 
     if req.script_type == "foreground" {
@@ -708,9 +803,11 @@ pub async fn run_script_handler(Json(req): Json<RunScriptReq>) -> impl IntoRespo
             Ok(output) => {
                 let log = String::from_utf8_lossy(&output.stdout).to_string()
                     + &String::from_utf8_lossy(&output.stderr);
-                Json(RunScriptRsp { log }).into_response()
+                Json(ApiResponse::ok(RunScriptRsp { log })).into_response()
             }
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => {
+                Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
+            }
         }
     } else {
         let mut cmd = if req.name.to_lowercase().ends_with(".py") {
@@ -722,27 +819,31 @@ pub async fn run_script_handler(Json(req): Json<RunScriptReq>) -> impl IntoRespo
         tokio::spawn(async move {
             let _ = cmd.status().await;
         });
-        Json(RunScriptRsp {
+        Json(ApiResponse::ok(RunScriptRsp {
             log: "Started in background".to_string(),
-        })
+        }))
         .into_response()
     }
 }
 
 pub async fn delete_script_handler(Json(req): Json<DeleteScriptReq>) -> impl IntoResponse {
     let Some(path) = validate_script_path(SCRIPT_DIRECTORY, &req.name) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "invalid arguments",
+        ))
+        .into_response();
     };
     match tokio::fs::remove_file(path).await {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
     }
 }
 
 pub async fn get_virtual_device_handler() -> impl IntoResponse {
     let network = std::path::Path::new(VIRTUAL_NETWORK).exists();
     let disk = std::path::Path::new(VIRTUAL_DISK).exists();
-    Json(GetVirtualDeviceRsp { network, disk })
+    Json(ApiResponse::ok(GetVirtualDeviceRsp { network, disk }))
 }
 
 pub async fn update_virtual_device_handler(
@@ -778,7 +879,13 @@ pub async fn update_virtual_device_handler(
                 "/etc/init.d/S03usbdev start",
             ],
         ),
-        _ => return StatusCode::BAD_REQUEST.into_response(),
+        _ => {
+            return Json(ApiResponse::<serde_json::Value>::err(
+                -1,
+                "invalid arguments",
+            ))
+            .into_response()
+        }
     };
     let exists = std::path::Path::new(device_path).exists();
     let cmds = if !exists {
@@ -793,12 +900,12 @@ pub async fn update_virtual_device_handler(
         }
     }
     let on = std::path::Path::new(device_path).exists();
-    Json(UpdateVirtualDeviceRsp { on }).into_response()
+    Json(ApiResponse::ok(UpdateVirtualDeviceRsp { on })).into_response()
 }
 
 pub async fn get_mdns_handler() -> impl IntoResponse {
     let enabled = std::path::Path::new(AVAHI_PID_FILE).exists();
-    Json(GetMdnsStateRsp { enabled })
+    Json(ApiResponse::ok(GetMdnsStateRsp { enabled }))
 }
 
 pub async fn enable_mdns_handler() -> impl IntoResponse {
@@ -807,8 +914,8 @@ pub async fn enable_mdns_handler() -> impl IntoResponse {
         AVAHI_BACKUP_SCRIPT, AVAHI_SCRIPT, AVAHI_SCRIPT
     );
     match Command::new("sh").arg("-c").arg(cmd).status().await {
-        Ok(s) if s.success() => StatusCode::OK,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(-1, "failed")).into_response(),
     }
 }
 
@@ -821,17 +928,19 @@ pub async fn disable_mdns_handler() -> impl IntoResponse {
             AVAHI_SCRIPT
         );
         match Command::new("sh").arg("-c").arg(cmd).status().await {
-            Ok(s) if s.success() => StatusCode::OK,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+            Ok(s) if s.success() => {
+                Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
+            }
+            _ => Json(ApiResponse::<serde_json::Value>::err(-1, "failed")).into_response(),
         }
     } else {
-        StatusCode::OK
+        Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
     }
 }
 
 pub async fn get_ssh_handler() -> impl IntoResponse {
     let enabled = !std::path::Path::new(SSH_STOP_FLAG).exists();
-    Json(GetSSHStateRsp { enabled })
+    Json(ApiResponse::ok(GetSSHStateRsp { enabled }))
 }
 
 pub async fn enable_ssh_handler() -> impl IntoResponse {
@@ -841,8 +950,8 @@ pub async fn enable_ssh_handler() -> impl IntoResponse {
         .status()
         .await
     {
-        Ok(s) if s.success() => StatusCode::OK,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(-1, "failed")).into_response(),
     }
 }
 
@@ -853,8 +962,8 @@ pub async fn disable_ssh_handler() -> impl IntoResponse {
         .status()
         .await
     {
-        Ok(s) if s.success() => StatusCode::OK,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(-1, "failed")).into_response(),
     }
 }
 
@@ -862,7 +971,7 @@ pub async fn get_swap_handler() -> impl IntoResponse {
     let size = std::fs::metadata(SWAP_FILE)
         .map(|m| m.len() / 1024 / 1024)
         .unwrap_or(0);
-    Json(GetSwapRsp { size: size as i64 })
+    Json(ApiResponse::ok(GetSwapRsp { size: size as i64 }))
 }
 
 pub async fn set_swap_handler(Json(req): Json<SetSwapReq>) -> impl IntoResponse {
@@ -870,7 +979,7 @@ pub async fn set_swap_handler(Json(req): Json<SetSwapReq>) -> impl IntoResponse 
         .map(|m| m.len() / 1024 / 1024)
         .unwrap_or(0);
     if req.size == current_size as i64 {
-        return StatusCode::OK;
+        return Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response();
     }
 
     if req.size == 0 {
@@ -888,7 +997,7 @@ pub async fn set_swap_handler(Json(req): Json<SetSwapReq>) -> impl IntoResponse 
             let _ = enable_inittab_swap().await;
         }
     }
-    StatusCode::OK
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 async fn enable_inittab_swap() -> tokio::io::Result<()> {
@@ -919,7 +1028,7 @@ pub async fn get_hostname_handler() -> impl IntoResponse {
         .unwrap_or_default()
         .trim()
         .to_string();
-    Json(GetHostnameRsp { hostname })
+    Json(ApiResponse::ok(GetHostnameRsp { hostname }))
 }
 
 fn validate_hostname(hostname: &str) -> bool {
@@ -940,7 +1049,11 @@ pub async fn set_hostname_handler(Json(req): Json<SetHostnameReq>) -> impl IntoR
     let hostname = req.hostname.trim();
 
     if !validate_hostname(hostname) {
-        return (StatusCode::BAD_REQUEST, "Invalid hostname").into_response();
+        return Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "invalid hostname",
+        ))
+        .into_response();
     }
 
     if let Ok(old_hostname) = tokio::fs::read_to_string(ETC_HOSTNAME).await {
@@ -965,7 +1078,7 @@ pub async fn set_hostname_handler(Json(req): Json<SetHostnameReq>) -> impl IntoR
         let _ = enable_mdns_handler().await;
     }
 
-    StatusCode::OK.into_response()
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 pub async fn get_web_title_handler() -> impl IntoResponse {
@@ -974,7 +1087,7 @@ pub async fn get_web_title_handler() -> impl IntoResponse {
         .unwrap_or_else(|_| "NanoKVM".to_string())
         .trim()
         .to_string();
-    Json(GetWebTitleRsp { title })
+    Json(ApiResponse::ok(GetWebTitleRsp { title }))
 }
 
 pub async fn set_web_title_handler(Json(req): Json<SetWebTitleReq>) -> impl IntoResponse {
@@ -983,7 +1096,7 @@ pub async fn set_web_title_handler(Json(req): Json<SetWebTitleReq>) -> impl Into
     } else {
         let _ = tokio::fs::write(WEB_TITLE_FILE, &req.title).await;
     }
-    StatusCode::OK
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 pub async fn get_autostart_handler() -> impl IntoResponse {
@@ -993,14 +1106,14 @@ pub async fn get_autostart_handler() -> impl IntoResponse {
             files.push(entry.file_name().to_string_lossy().to_string());
         }
     }
-    Json(GetAutostartRsp { files })
+    Json(ApiResponse::ok(GetAutostartRsp { files }))
 }
 
 pub async fn get_autostart_content_handler(Path(name): Path<String>) -> impl IntoResponse {
     let path = std::path::Path::new(AUTOSTART_DIRECTORY).join(name);
     match tokio::fs::read_to_string(path).await {
-        Ok(c) => (StatusCode::OK, c).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+        Ok(c) => Json(ApiResponse::ok(c)).into_response(),
+        Err(_) => Json(ApiResponse::<String>::err(-1, "read file fail")).into_response(),
     }
 }
 
@@ -1014,25 +1127,39 @@ pub async fn upload_autostart_handler(
         Ok(_) => {
             #[cfg(target_os = "linux")]
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
-            StatusCode::OK
+            Json(ApiResponse::ok(
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+            ))
+            .into_response()
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
     }
 }
 
 pub async fn delete_autostart_handler(Path(name): Path<String>) -> impl IntoResponse {
     let path = std::path::Path::new(AUTOSTART_DIRECTORY).join(name);
     match tokio::fs::remove_file(path).await {
-        Ok(_) => StatusCode::OK,
-        Err(_) => StatusCode::NOT_FOUND,
+        Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        Err(_) => Json(ApiResponse::<serde_json::Value>::err(
+            -1,
+            "remove file fail",
+        ))
+        .into_response(),
     }
 }
 
 pub async fn reboot_handler() -> impl IntoResponse {
-    if let Err(e) = Command::new("reboot").status().await {
-        error!("Failed to execute reboot: {}", e);
-    }
-    StatusCode::OK
+    tokio::spawn(async move {
+        // Give the HTTP response a moment to flush before rebooting.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        if let Err(e) = Command::new("reboot").status().await {
+            error!("Failed to execute reboot: {}", e);
+        }
+    });
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 #[cfg(target_os = "linux")]
@@ -1045,7 +1172,7 @@ pub async fn reset_hdmi_handler(State(state): State<Arc<AppState>>) -> impl Into
 
     let _ = tokio::fs::remove_file(HDMI_DISABLE_FILE).await;
 
-    StatusCode::OK
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 #[cfg(target_os = "linux")]
@@ -1054,7 +1181,7 @@ pub async fn enable_hdmi_handler(State(state): State<Arc<AppState>>) -> impl Int
 
     let _ = tokio::fs::remove_file(HDMI_DISABLE_FILE).await;
 
-    StatusCode::OK
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 #[cfg(target_os = "linux")]
@@ -1063,11 +1190,11 @@ pub async fn disable_hdmi_handler(State(state): State<Arc<AppState>>) -> impl In
 
     let _ = tokio::fs::write(HDMI_DISABLE_FILE, b"").await;
 
-    StatusCode::OK
+    Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
 pub async fn get_hdmi_state_handler() -> impl IntoResponse {
     let enabled = !std::path::Path::new(HDMI_DISABLE_FILE).exists();
 
-    Json(GetHdmiStateRsp { enabled })
+    Json(ApiResponse::ok(GetHdmiStateRsp { enabled }))
 }
