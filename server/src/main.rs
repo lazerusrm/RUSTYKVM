@@ -797,13 +797,6 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
         let h264_active =
             state.webrtc.total_connection_count() > 0 || state.tx_h264.receiver_count() > 0;
         if state.tx_mjpeg.receiver_count() > 0 && !h264_active {
-            // Extra safety check: if encoder is in H.264 mode and WebRTC just disconnected,
-            // give it a moment before switching back to MJPEG
-            if state.kvm.get_encoder_mode() == kvm::EncoderMode::H264 {
-                // H.264 was active but WebRTC disconnected - wait for next tick
-                // This prevents rapid mode toggling during connection transitions
-                continue;
-            }
             let kvm_state = state.clone();
             match tokio::task::spawn_blocking(move || {
                 kvm_state.kvm.get_mjpeg(width, height, quality)
