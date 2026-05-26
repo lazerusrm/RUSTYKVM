@@ -1,7 +1,7 @@
 //! Brute-force protection module (P0 security parity).
 //! Clean, proper implementation matching the official Go version's behavior.
 
-use crate::config::PasswordPolicy;
+use crate::config::Security;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,14 +24,14 @@ struct LoginAttempt {
 
 pub struct BruteForce {
     attempts: RwLock<HashMap<String, LoginAttempt>>,
-    policy: PasswordPolicy,
+    security: Security,
 }
 
 impl BruteForce {
-    pub fn new(policy: PasswordPolicy) -> Self {
+    pub fn new(security: Security) -> Self {
         let this = Self {
             attempts: RwLock::new(HashMap::new()),
-            policy,
+            security,
         };
         // Best effort load from disk
         let _ = this.load();
@@ -39,7 +39,7 @@ impl BruteForce {
     }
 
     fn is_enabled(&self) -> bool {
-        self.policy.lockout_duration_minutes > 0 && self.policy.lockout_threshold > 0
+        self.security.login_lockout_duration > 0 && self.security.login_max_failures > 0
     }
 
     fn now(&self) -> u64 {
@@ -139,7 +139,7 @@ impl BruteForce {
             map.clear();
         }
 
-        let window = (self.policy.lockout_duration_minutes as u64) * 60;
+        let window = self.security.login_lockout_duration as u64; // already in seconds, Go-style
 
         let attempt = map.entry(ip.to_string()).or_default();
 
@@ -151,7 +151,7 @@ impl BruteForce {
         attempt.failures += 1;
         attempt.last_failed = now;
 
-        if attempt.failures >= self.policy.lockout_threshold as u32 {
+        if attempt.failures >= self.security.login_max_failures as u32 {
             attempt.lockout_end = now + window;
             drop(map); // release lock before await
             self.save().await;
