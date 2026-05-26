@@ -54,7 +54,7 @@ use crate::webrtc::screen::{stop_frame_detect_handler, update_frame_detect_handl
 use crate::vm::{
     delete_autostart_handler, delete_script_handler, disable_hdmi_handler, disable_mdns_handler,
     disable_ssh_handler, enable_hdmi_handler, enable_mdns_handler, enable_ssh_handler,
-    get_autostart_content_handler, get_autostart_handler, get_gpio_handler, get_hardware_handler,
+    get_autostart_content_handler, get_autostart_handler, get_edid_handler, get_gpio_handler, get_hardware_handler, get_serial_ports_handler,
     get_hdmi_state_handler, get_hostname_handler, get_info_handler, get_jiggler_handler,
     get_mdns_handler, get_memory_limit_handler, get_oled_handler, get_scripts_handler,
     get_ssh_handler, get_swap_handler, get_virtual_device_handler, get_web_title_handler,
@@ -463,6 +463,9 @@ async fn main() {
     {
         api_routes = api_routes
             .route("/vm/hardware", get(get_hardware_handler))
+            // P1 stub - see IMPLEMENTATION_PLAN.md
+            .route("/vm/edid", get(get_edid_handler))
+            .route("/vm/serial-ports", get(get_serial_ports_handler))
             .route(
                 "/vm/device/virtual",
                 get(get_virtual_device_handler).post(update_virtual_device_handler),

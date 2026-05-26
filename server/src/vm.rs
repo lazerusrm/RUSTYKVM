@@ -537,6 +537,47 @@ pub async fn get_hardware_handler(State(state): State<Arc<AppState>>) -> impl In
     }))
 }
 
+// === P1 Stub: EDID support (see IMPLEMENTATION_PLAN.md for full editor) ===
+#[derive(Debug, Serialize)]
+pub struct GetEdidRsp {
+    pub data: String, // hex or base64
+    pub implemented: bool,
+}
+
+#[cfg(target_os = "linux")]
+pub async fn get_edid_handler() -> impl IntoResponse {
+    // TODO: Implement real EDID read via FFI / video subsystem (mirror Go's approach in common or support/sg2002)
+    Json(ApiResponse::ok(GetEdidRsp {
+        data: "".to_string(),
+        implemented: false,
+    }))
+}
+
+// === P1 Stub: Serial ports list (for terminal support, see IMPLEMENTATION_PLAN.md) ===
+#[derive(Debug, Serialize)]
+pub struct SerialPort {
+    pub path: String,
+    pub description: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetSerialPortsRsp {
+    pub ports: Vec<SerialPort>,
+    pub implemented: bool,
+}
+
+#[cfg(target_os = "linux")]
+pub async fn get_serial_ports_handler() -> impl IntoResponse {
+    // TODO: Implement real discovery (e.g. via /dev/ttyS* or udev, or exec to list available)
+    // Go side has limited multi-channel serial in newer versions.
+    Json(ApiResponse::ok(GetSerialPortsRsp {
+        ports: vec![
+            SerialPort { path: "/dev/ttyS0".into(), description: "UART0 (stub)".into() },
+        ],
+        implemented: false,
+    }))
+}
+
 #[cfg(target_os = "linux")]
 pub async fn set_gpio_handler(
     State(state): State<Arc<AppState>>,
