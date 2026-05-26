@@ -250,6 +250,33 @@ async fn save_shortcuts(shortcuts: &[Shortcut]) -> anyhow::Result<()> {
     Ok(())
 }
 
+// === P1 Stub: Mouse scroll wheel direction + speed (see IMPLEMENTATION_PLAN.md) ===
+#[derive(Debug, Deserialize)]
+pub struct ScrollConfigReq {
+    pub direction: Option<i32>, // -1 or 1
+    pub speed: Option<u8>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ScrollConfigRsp {
+    pub direction: i32,
+    pub speed: u8,
+    pub implemented: bool,
+}
+
+pub async fn get_scroll_config_handler() -> impl IntoResponse {
+    Json(ApiResponse::ok(ScrollConfigRsp {
+        direction: -1,
+        speed: 1,
+        implemented: false,
+    }))
+}
+
+pub async fn set_scroll_config_handler(Json(_req): Json<ScrollConfigReq>) -> impl IntoResponse {
+    // TODO: Persist + apply via HID/FFI layer (see plan)
+    Json(ApiResponse::<()>::err(501, "Mouse scroll config not yet implemented in Rust backend. See IMPLEMENTATION_PLAN.md"))
+}
+
 fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
     let mut m = std::collections::HashMap::new();
 

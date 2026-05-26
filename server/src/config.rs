@@ -46,6 +46,8 @@ pub struct Config {
     pub turn: Turn,
     #[serde(default)]
     pub password_policy: PasswordPolicy,
+    #[serde(default)]
+    pub security: Security,
 }
 
 fn default_proto() -> String {
@@ -248,6 +250,32 @@ impl Default for PasswordPolicy {
             force_first_password_change: true,
         }
     }
+}
+
+// Security config for parity with official Go version (server/config/types.go)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Security {
+    #[serde(rename = "loginLockoutDuration", default = "default_lockout_duration_sec")]
+    pub login_lockout_duration: i32, // seconds, 0 = disabled (matches Go)
+    #[serde(rename = "loginMaxFailures", default = "default_max_failures")]
+    pub login_max_failures: i32,
+}
+
+impl Default for Security {
+    fn default() -> Self {
+        Self {
+            login_lockout_duration: 0, // disabled by default for safety, like Go
+            login_max_failures: 5,
+        }
+    }
+}
+
+fn default_lockout_duration_sec() -> i32 {
+    0
+}
+
+fn default_max_failures() -> i32 {
+    5
 }
 
 impl Config {

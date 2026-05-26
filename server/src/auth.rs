@@ -26,6 +26,8 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, warn};
 
+pub mod brute_force;
+
 const COOKIE_NAME: &str = "nano-kvm-token";
 const PWD_FILE: &str = "/etc/kvm/pwd";
 const AUDIT_LOG_FILE: &str = "/var/log/nanokvm_auth.log";
@@ -149,8 +151,8 @@ pub async fn login_handler(
             .into_response();
     }
 
-    // === NEW: Brute force check (P0 security parity) ===
-    if let Some((code, msg)) = check_login_attempt(policy, &ip_address) {
+    // === Brute force check (P0 security parity, now via AppState) ===
+    if let Some((code, msg)) = state.brute_force.check(&ip_address) {
         // Match Go behavior: sleep on locked account
         tokio::time::sleep(Duration::from_secs(3)).await;
         log_audit_event(
@@ -176,8 +178,8 @@ pub async fn login_handler(
         .into();
 
     if !password_valid || !username_matches {
-        // === NEW: Record failure + possible lockout ===
-        let lockout_err = record_login_failure(policy, &ip_address);
+        // Record failure + possible lockout (now via AppState)
+        let lockout_err = state.brute_force.record_failure(&ip_address).await;
 
         // Match Go timing attack mitigation
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -199,7 +201,7 @@ pub async fn login_handler(
     }
 
     // Success path
-    clear_login_attempt(&ip_address);
+    state.brute_force.clear(&ip_address).await;
 
     let session_id = uuid::Uuid::new_v4().to_string();
     let exp =
@@ -411,128 +413,5 @@ pub async fn generate_token(
     }
 }
 
-// ============================================================================
-// Brute force protection (P0 security parity with Go implementation)
-// ============================================================================
-
-use std::collections::HashMap;
-use std::sync::Once;
-
-static BRUTE_FORCE_CLEANUP_STARTED: Once = Once::new();
-
-#[derive(Debug, Clone, Default)]
-struct LoginAttempt {
-    failures: u32,
-    last_failed: u64,
-    lockout_end: u64,
-}
-
-static LOGIN_ATTEMPTS: parking_lot::RwLock<Option<HashMap<String, LoginAttempt>>> =
-    parking_lot::RwLock::new(None);
-
-fn get_brute_force_map() -> parking_lot::RwLockWriteGuard<'static, Option<HashMap<String, LoginAttempt>>> {
-    let mut guard = LOGIN_ATTEMPTS.write();
-    if guard.is_none() {
-        *guard = Some(HashMap::new());
-    }
-    guard
-}
-
-fn brute_force_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-/// Returns true if the IP is currently locked out.
-/// On lock, the caller should sleep ~3s and return the specific error (matching Go).
-pub fn check_login_attempt(policy: &PasswordPolicy, ip: &str) -> Option<(i32, String)> {
-    if policy.lockout_duration_minutes == 0 || policy.lockout_threshold == 0 {
-        return None; // disabled
-    }
-
-    // Start cleanup goroutine once
-    BRUTE_FORCE_CLEANUP_STARTED.call_once(|| {
-        let duration = policy.lockout_duration_minutes;
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(6 * 60 * 60));
-            loop {
-                interval.tick().await;
-                let mut map_guard = LOGIN_ATTEMPTS.write();
-                if let Some(map) = map_guard.as_mut() {
-                    let now = brute_force_now();
-                    let before = map.len();
-                    map.retain(|_, a| {
-                        (a.lockout_end > 0 && now < a.lockout_end)
-                            || (a.lockout_end == 0 && now.saturating_sub(a.last_failed) < 30 * 60)
-                    });
-                    if map.len() < before {
-                        debug!("Brute-force cleanup removed {} records", before - map.len());
-                    }
-                    if map.len() > 3000 {
-                        warn!("Brute-force cap hit, clearing map");
-                        map.clear();
-                    }
-                }
-            }
-        });
-    });
-
-    let now = brute_force_now();
-    let map = LOGIN_ATTEMPTS.read();
-    if let Some(map) = map.as_ref() {
-        if let Some(attempt) = map.get(ip) {
-            if attempt.lockout_end > 0 && now < attempt.lockout_end {
-                return Some((
-                    -5,
-                    "Account locked due to too many failed attempts, please try again later".into(),
-                ));
-            }
-        }
-    }
-    None
-}
-
-/// Record a failure. Returns Some(error) if this caused a new lockout.
-pub fn record_login_failure(policy: &PasswordPolicy, ip: &str) -> Option<(i32, String)> {
-    if policy.lockout_duration_minutes == 0 || policy.lockout_threshold == 0 {
-        return None;
-    }
-
-    let now = brute_force_now();
-    let mut map_guard = get_brute_force_map();
-    let map = map_guard.as_mut().unwrap();
-
-    if map.len() >= 3000 {
-        map.clear();
-    }
-
-    let window = (policy.lockout_duration_minutes as u64) * 60;
-
-    let attempt = map.entry(ip.to_string()).or_default();
-
-    if attempt.last_failed > 0 && now.saturating_sub(attempt.last_failed) > window {
-        attempt.failures = 0;
-        attempt.lockout_end = 0;
-    }
-
-    attempt.failures += 1;
-    attempt.last_failed = now;
-
-    if attempt.failures >= policy.lockout_threshold as u32 {
-        attempt.lockout_end = now + window;
-        return Some((
-            -5,
-            "Account locked due to too many failed attempts, please try again later".into(),
-        ));
-    }
-    None
-}
-
-pub fn clear_login_attempt(ip: &str) {
-    let mut map_guard = LOGIN_ATTEMPTS.write();
-    if let Some(map) = map_guard.as_mut() {
-        map.remove(ip);
-    }
-}
+// Brute force protection is now properly implemented in auth/brute_force.rs
+// and wired through AppState.brute_force (see main.rs).

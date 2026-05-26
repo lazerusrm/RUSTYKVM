@@ -72,11 +72,12 @@ use crate::auth::{
     auth_middleware, change_password_handler, get_account_handler, get_encryption_key_handler,
     is_password_updated_handler, login_handler, logout_handler,
 };
+use crate::auth::brute_force::BruteForce;
 use crate::config::Config;
 use crate::hid::{
     add_shortcut_handler, delete_shortcut_handler, get_hid_mode_handler, get_leader_key_handler,
-    get_shortcuts_handler, paste_handler, reset_hid_handler, set_hid_mode_handler,
-    set_leader_key_handler,
+    get_scroll_config_handler, get_shortcuts_handler, paste_handler, reset_hid_handler,
+    set_hid_mode_handler, set_leader_key_handler, set_scroll_config_handler,
 };
 use crate::network::{
     connect_wifi_handler, connect_wifi_no_auth_handler, delete_wol_mac_handler,
@@ -158,6 +159,7 @@ pub struct AppState {
     kvm: Arc<::kvm::Kvm>,
     health_state: Arc<HealthState>,
     passkey_state: Arc<crate::passkey::PasskeyState>,
+    brute_force: Arc<BruteForce>,
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -175,6 +177,7 @@ pub struct AppState {
     jiggler: Arc<::vm::jiggler::MouseJiggler>,
     health_state: Arc<HealthState>,
     passkey_state: Arc<crate::passkey::PasskeyState>,
+    brute_force: Arc<BruteForce>,
 }
 
 #[tokio::main]
@@ -274,6 +277,11 @@ async fn main() {
         kvm: kvm_handle.clone(),
         health_state: Arc::new(HealthState::default()),
         passkey_state: passkey_state.clone(),
+        brute_force: {
+            let bf = Arc::new(BruteForce::new(config.password_policy.clone()));
+            bf.spawn_cleanup();
+            bf
+        },
     });
 
     #[cfg(not(target_os = "linux"))]
@@ -290,6 +298,11 @@ async fn main() {
         jiggler: mouse_jiggler.clone(),
         health_state: Arc::new(HealthState::default()),
         passkey_state,
+        brute_force: {
+            let bf = Arc::new(BruteForce::new(config.password_policy.clone()));
+            bf.spawn_cleanup();
+            bf
+        },
     });
 
     // Initialize storage health check on boot (non-blocking)
@@ -404,6 +417,8 @@ async fn main() {
             get(get_hid_mode_handler).post(set_hid_mode_handler),
         )
         .route("/hid/reset", post(reset_hid_handler))
+        // P1 stubs (backend only for now) - see IMPLEMENTATION_PLAN.md
+        .route("/hid/mouse/scroll", get(get_scroll_config_handler).post(set_scroll_config_handler))
         .route(
             "/network/wol",
             post(wol_handler)
@@ -778,7 +793,7 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
     let mut interval = tokio::time::interval(Duration::from_millis(33));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let (width, height, manual_quality, fps, _stream_type) = {
+        let (width, height, manual_quality, fps, stream_type) = {
             let cfg = state.screen_config.read();
             (
                 cfg.width,
@@ -792,11 +807,10 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
         let quality = state.quality_controller.get_mjpeg_quality(manual_quality);
 
         interval.tick().await;
-        // Only read MJPEG when we have MJPEG receivers and NO active H.264 consumers.
-        // H.264 (WebRTC or direct) takes precedence to avoid encoder mode switching.
-        let h264_active =
-            state.webrtc.total_connection_count() > 0 || state.tx_h264.receiver_count() > 0;
-        if state.tx_mjpeg.receiver_count() > 0 && !h264_active {
+        // Only read MJPEG when the configured stream type is MJPEG.
+        // Rationale: stale WebRTC/direct-H.264 sessions can otherwise permanently starve MJPEG
+        // (HTTP handler stays connected, but never receives any frames).
+        if state.tx_mjpeg.receiver_count() > 0 && stream_type == "mjpeg" {
             let kvm_state = state.clone();
             match tokio::task::spawn_blocking(move || {
                 kvm_state.kvm.get_mjpeg(width, height, quality)
@@ -847,7 +861,7 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
     let mut parameter_sets_initialized = false;
 
     loop {
-        let (width, height, manual_bitrate, fps, _stream_type) = {
+        let (width, height, manual_bitrate, fps, stream_type) = {
             let cfg = state.screen_config.read();
             (
                 cfg.width,
@@ -861,6 +875,10 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
         let bitrate = state.quality_controller.get_h264_bitrate(manual_bitrate);
 
         interval.tick().await;
+        // Only capture H.264 when the configured stream type is H.264.
+        if stream_type != "h264" {
+            continue;
+        }
         // Read H.264 when either WebRTC peers are connected OR direct H.264 clients are subscribed.
         // Direct streaming uses `tx_h264` (no WebRTC connections), so we must not gate on WebRTC alone.
         let webrtc_active = state.webrtc.total_connection_count() > 0;
