@@ -57,11 +57,12 @@ use crate::vm::{
     get_autostart_content_handler, get_autostart_handler, get_gpio_handler, get_hardware_handler,
     get_hdmi_state_handler, get_hostname_handler, get_info_handler, get_jiggler_handler,
     get_mdns_handler, get_memory_limit_handler, get_oled_handler, get_scripts_handler,
-    get_ssh_handler, get_swap_handler, get_virtual_device_handler, get_web_title_handler,
-    reboot_handler, reset_hdmi_handler, run_script_handler, set_gpio_handler, set_hostname_handler,
-    set_jiggler_handler, set_memory_limit_handler, set_oled_handler, set_screen_handler,
-    set_swap_handler, set_tls_handler, set_web_title_handler, terminal_handler,
-    update_virtual_device_handler, upload_autostart_handler, upload_script_handler,
+    get_serial_ports_handler, get_ssh_handler, get_swap_handler, get_virtual_device_handler,
+    get_web_title_handler, reboot_handler, reset_hdmi_handler, run_script_handler,
+    serial_ws_handler, set_gpio_handler, set_hostname_handler, set_jiggler_handler,
+    set_memory_limit_handler, set_oled_handler, set_screen_handler, set_swap_handler,
+    set_tls_handler, set_web_title_handler, terminal_handler, update_virtual_device_handler,
+    upload_autostart_handler, upload_script_handler,
 };
 
 use crate::application::{
@@ -76,8 +77,8 @@ use crate::auth::{
 use crate::config::Config;
 use crate::hid::{
     add_shortcut_handler, delete_shortcut_handler, get_hid_mode_handler, get_leader_key_handler,
-    get_shortcuts_handler, paste_handler, reset_hid_handler,
-    set_hid_mode_handler, set_leader_key_handler,
+    get_mouse_scroll_handler, get_shortcuts_handler, paste_handler, reset_hid_handler,
+    set_hid_mode_handler, set_leader_key_handler, set_mouse_scroll_handler,
 };
 use crate::network::{
     connect_wifi_handler, connect_wifi_no_auth_handler, delete_wol_mac_handler,
@@ -160,6 +161,9 @@ pub struct AppState {
     health_state: Arc<HealthState>,
     passkey_state: Arc<crate::passkey::PasskeyState>,
     brute_force: Arc<BruteForce>,
+    // Server-managed mouse wheel direction + speed profile (optional enhancement,
+    // wire protocol itself was already at Go parity). See hid/mouse_scroll.rs.
+    mouse_scroll: Arc<crate::hid::mouse_scroll::MouseScrollStore>,
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -178,6 +182,9 @@ pub struct AppState {
     health_state: Arc<HealthState>,
     passkey_state: Arc<crate::passkey::PasskeyState>,
     brute_force: Arc<BruteForce>,
+    // Server-managed mouse wheel direction + speed profile (optional enhancement,
+    // wire protocol itself was already at Go parity). See hid/mouse_scroll.rs.
+    mouse_scroll: Arc<crate::hid::mouse_scroll::MouseScrollStore>,
 }
 
 #[tokio::main]
@@ -282,6 +289,7 @@ async fn main() {
             bf.spawn_cleanup();
             bf
         },
+        mouse_scroll: crate::hid::mouse_scroll::MouseScrollStore::new(),
     });
 
     #[cfg(not(target_os = "linux"))]
@@ -303,6 +311,7 @@ async fn main() {
             bf.spawn_cleanup();
             bf
         },
+        mouse_scroll: crate::hid::mouse_scroll::MouseScrollStore::new(),
     });
 
     // Initialize storage health check on boot (non-blocking)
@@ -416,6 +425,10 @@ async fn main() {
             "/hid/mode",
             get(get_hid_mode_handler).post(set_hid_mode_handler),
         )
+        .route(
+            "/hid/mouse/scroll",
+            get(get_mouse_scroll_handler).post(set_mouse_scroll_handler),
+        )
         .route("/hid/reset", post(reset_hid_handler))
         .route(
             "/network/wol",
@@ -465,6 +478,8 @@ async fn main() {
                 "/vm/device/virtual",
                 get(get_virtual_device_handler).post(update_virtual_device_handler),
             )
+            .route("/vm/serial-ports", get(get_serial_ports_handler))
+            .route("/vm/serial/{port}", get(serial_ws_handler))
             .route("/vm/gpio", get(get_gpio_handler).post(set_gpio_handler))
             .route(
                 "/vm/mouse-jiggler",

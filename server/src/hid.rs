@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
+// New sub-module for the mouse wheel direction/speed server profile (Iteration 6).
+pub mod mouse_scroll;
+pub use mouse_scroll::{get_mouse_scroll_handler, set_mouse_scroll_handler};
+
 #[derive(Debug, Deserialize)]
 pub struct PasteReq {
     pub content: String,
@@ -111,7 +115,11 @@ pub async fn delete_shortcut_handler(Json(req): Json<DeleteShortcutReq>) -> impl
         let _ = save_shortcuts(&shortcuts).await;
         Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
     } else {
-        Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::NOT_FOUND, "not found")).into_response()
+        Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::NOT_FOUND,
+            "not found",
+        ))
+        .into_response()
     }
 }
 
@@ -161,7 +169,11 @@ pub async fn set_hid_mode_handler(Json(req): Json<SetHidModeReq>) -> impl IntoRe
         });
         Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
     } else {
-        Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, "failed")).into_response()
+        Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            "failed",
+        ))
+        .into_response()
     }
 }
 
@@ -474,7 +486,6 @@ fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
         m.insert('}', (0x40, 46));
         m.insert('@', (0x40, 39));
         m.insert('€', (0x40, 8));
-
     } else if lang == "de" {
         // German QWERTZ layout (matching Go implementation)
         // Y/Z swap
@@ -493,32 +504,32 @@ fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
         m.insert('ß', (0, 45));
 
         // Special character remappings (German layout)
-        m.insert('^', (0, 53));      // must be double
-        m.insert('/', (2, 36));      // Shift + 7
-        m.insert('(', (2, 37));      // Shift + 8
-        m.insert('&', (2, 35));      // Shift + 6
-        m.insert(')', (2, 38));      // Shift + 9
-        m.insert('`', (2, 46));      // Grave Accent / Backtick
-        m.insert('"', (2, 31));      // Shift + 2
-        m.insert('?', (2, 45));      // Shift + ß
-        m.insert('{', (0x40, 36));   // AltGr + 7
-        m.insert('[', (0x40, 37));   // AltGr + 8
-        m.insert(']', (0x40, 38));   // AltGr + 6
-        m.insert('}', (0x40, 39));   // AltGr + 0
-        m.insert('\\', (0x40, 45));  // AltGr + ß
-        m.insert('@', (0x40, 20));   // AltGr + q
-        m.insert('+', (0, 48));      // Shift + +
-        m.insert('*', (2, 48));      // Shift + +
-        m.insert('~', (0x40, 48));   // Shift + +
-        m.insert('#', (0, 49));      // Shift + #
-        m.insert('\'', (2, 49));     // Shift + #
-        m.insert('<', (0, 100));     // Shift + <
-        m.insert('>', (2, 100));     // Shift + <
-        m.insert('|', (0x40, 100));  // AltGr + <
-        m.insert(';', (2, 54));      // Shift + ,
-        m.insert(':', (2, 55));      // Shift + .
-        m.insert('-', (0, 56));      // Shift + -
-        m.insert('_', (2, 56));      // Shift + -
+        m.insert('^', (0, 53)); // must be double
+        m.insert('/', (2, 36)); // Shift + 7
+        m.insert('(', (2, 37)); // Shift + 8
+        m.insert('&', (2, 35)); // Shift + 6
+        m.insert(')', (2, 38)); // Shift + 9
+        m.insert('`', (2, 46)); // Grave Accent / Backtick
+        m.insert('"', (2, 31)); // Shift + 2
+        m.insert('?', (2, 45)); // Shift + ß
+        m.insert('{', (0x40, 36)); // AltGr + 7
+        m.insert('[', (0x40, 37)); // AltGr + 8
+        m.insert(']', (0x40, 38)); // AltGr + 6
+        m.insert('}', (0x40, 39)); // AltGr + 0
+        m.insert('\\', (0x40, 45)); // AltGr + ß
+        m.insert('@', (0x40, 20)); // AltGr + q
+        m.insert('+', (0, 48)); // Shift + +
+        m.insert('*', (2, 48)); // Shift + +
+        m.insert('~', (0x40, 48)); // Shift + +
+        m.insert('#', (0, 49)); // Shift + #
+        m.insert('\'', (2, 49)); // Shift + #
+        m.insert('<', (0, 100)); // Shift + <
+        m.insert('>', (2, 100)); // Shift + <
+        m.insert('|', (0x40, 100)); // AltGr + <
+        m.insert(';', (2, 54)); // Shift + ,
+        m.insert(':', (2, 55)); // Shift + .
+        m.insert('-', (0, 56)); // Shift + -
+        m.insert('_', (2, 56)); // Shift + -
 
         // Additional German special characters
         m.insert('´', (0, 46));
