@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::api::ApiResponse;
+use crate::api::{error_codes, ApiResponse};
 use axum::{extract::Json, response::IntoResponse};
 use serde::Serialize;
 use tokio::process::Command;
@@ -85,7 +85,11 @@ pub async fn tailscale_start_handler() -> impl IntoResponse {
     );
     match Command::new("sh").arg("-c").arg(cmd).status().await {
         Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        _ => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, "start failed")).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            "start failed",
+        ))
+        .into_response(),
     }
 }
 
@@ -96,7 +100,11 @@ pub async fn tailscale_restart_handler() -> impl IntoResponse {
     );
     match Command::new("sh").arg("-c").arg(cmd).status().await {
         Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        _ => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, "restart failed")).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            "restart failed",
+        ))
+        .into_response(),
     }
 }
 
@@ -104,7 +112,11 @@ pub async fn tailscale_stop_handler() -> impl IntoResponse {
     let cmd = format!("{} stop && rm -f {}", SCRIPT_PATH, SCRIPT_PATH);
     match Command::new("sh").arg("-c").arg(cmd).status().await {
         Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        _ => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, "stop failed")).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            "stop failed",
+        ))
+        .into_response(),
     }
 }
 
@@ -213,13 +225,19 @@ pub async fn tailscale_login_handler() -> impl IntoResponse {
                 }
             }
             error!("Tailscale login URL not found in output: {}", combined);
-            Json(ApiResponse::<serde_json::Value>::err(-2, "login failed")).into_response()
+            Json(ApiResponse::<serde_json::Value>::err(
+                error_codes::AUTH,
+                "login failed",
+            ))
+            .into_response()
         }
-        Ok(Err(e)) => {
-            Json(ApiResponse::<serde_json::Value>::err(-2, &e.to_string())).into_response()
-        }
+        Ok(Err(e)) => Json(ApiResponse::<serde_json::Value>::err(
+            error_codes::AUTH,
+            &e.to_string(),
+        ))
+        .into_response(),
         Err(_) => Json(ApiResponse::<serde_json::Value>::err(
-            -2,
+            error_codes::AUTH,
             "tailscale command timed out",
         ))
         .into_response(),
@@ -266,7 +284,11 @@ pub async fn tailscale_logout_handler() -> impl IntoResponse {
         .await
     {
         Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        _ => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, "logout failed")).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            "logout failed",
+        ))
+        .into_response(),
     }
 }
 

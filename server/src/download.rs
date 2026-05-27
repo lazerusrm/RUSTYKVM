@@ -1,4 +1,4 @@
-use crate::api::ApiResponse;
+use crate::api::{error_codes, ApiResponse};
 use axum::{
     extract::{Json, Multipart},
     response::IntoResponse,
@@ -207,7 +207,11 @@ pub async fn download_image_url_handler(Json(req): Json<DownloadImageUrlReq>) ->
     let url = match url::Url::parse(&url_str) {
         Ok(u) => u,
         Err(_) => {
-            return Json(ApiResponse::<serde_json::Value>::err(-1, "invalid url")).into_response()
+            return Json(ApiResponse::<serde_json::Value>::err(
+                error_codes::VALIDATION,
+                "invalid url",
+            ))
+            .into_response()
         }
     };
 

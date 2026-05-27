@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::api::ApiResponse;
+use crate::api::{error_codes, ApiResponse};
 use crate::AppState;
 use axum::{
     extract::{
@@ -442,14 +442,22 @@ pub async fn set_tls_handler(
             });
             Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
         }
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            &e.to_string(),
+        ))
+        .into_response(),
     }
 }
 
 pub async fn set_oled_handler(Json(req): Json<SetOledReq>) -> impl IntoResponse {
     match tokio::fs::write(OLED_SLEEP_FILE, req.sleep.to_string()).await {
         Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            &e.to_string(),
+        ))
+        .into_response(),
     }
 }
 
@@ -564,8 +572,16 @@ pub async fn get_serial_ports_handler() -> impl IntoResponse {
             if let Some(p) = entry.path().to_str() {
                 for prefix in &patterns {
                     if p.starts_with(prefix) {
-                        let desc = if p.contains("USB") || p.contains("ACM") { "USB Serial" } else { "Onboard UART" }.to_string();
-                        ports.push(SerialPortInfo { path: p.to_string(), description: desc });
+                        let desc = if p.contains("USB") || p.contains("ACM") {
+                            "USB Serial"
+                        } else {
+                            "Onboard UART"
+                        }
+                        .to_string();
+                        ports.push(SerialPortInfo {
+                            path: p.to_string(),
+                            description: desc,
+                        });
                         break;
                     }
                 }
@@ -576,7 +592,10 @@ pub async fn get_serial_ports_handler() -> impl IntoResponse {
     Json(ApiResponse::ok(GetSerialPortsRsp { ports }))
 }
 
-pub async fn serial_ws_handler(ws: WebSocketUpgrade, Path(port): Path<String>) -> impl IntoResponse {
+pub async fn serial_ws_handler(
+    ws: WebSocketUpgrade,
+    Path(port): Path<String>,
+) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_serial_socket(socket, port))
 }
 
@@ -586,10 +605,15 @@ async fn handle_serial_socket(mut socket: WebSocket, port: String) {
         return;
     }
 
-    let mut serial = match serialport::new(&port, 115200).timeout(std::time::Duration::from_millis(100)).open() {
+    let mut serial = match serialport::new(&port, 115200)
+        .timeout(std::time::Duration::from_millis(100))
+        .open()
+    {
         Ok(s) => s,
         Err(e) => {
-            let _ = socket.send(Message::Text(format!("Open failed: {}", e))).await;
+            let _ = socket
+                .send(Message::Text(format!("Open failed: {}", e)))
+                .await;
             return;
         }
     };
@@ -605,7 +629,15 @@ async fn handle_serial_socket(mut socket: WebSocket, port: String) {
         let mut b = [0u8; 1024];
         loop {
             match r.read(&mut b) {
-                Ok(n) if n > 0 => { if tx.send(Message::Binary(b[..n].to_vec().into())).await.is_err() { break; } }
+                Ok(n) if n > 0 => {
+                    if tx
+                        .send(Message::Binary(b[..n].to_vec().into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
                 Ok(_) => {}
                 Err(_) => break,
             }
@@ -615,8 +647,12 @@ async fn handle_serial_socket(mut socket: WebSocket, port: String) {
     let wt = tokio::spawn(async move {
         while let Some(Ok(m)) = rx.next().await {
             match m {
-                Message::Binary(d) => { let _ = w.write_all(&d).await; }
-                Message::Text(t) => { let _ = w.write_all(t.as_bytes()).await; }
+                Message::Binary(d) => {
+                    let _ = w.write_all(&d).await;
+                }
+                Message::Text(t) => {
+                    let _ = w.write_all(t.as_bytes()).await;
+                }
                 Message::Close(_) => break,
                 _ => {}
             }
@@ -695,7 +731,11 @@ pub async fn set_jiggler_handler(
 
     match res {
         Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            &e.to_string(),
+        ))
+        .into_response(),
     }
 }
 
@@ -894,9 +934,11 @@ pub async fn run_script_handler(Json(req): Json<RunScriptReq>) -> impl IntoRespo
                     + &String::from_utf8_lossy(&output.stderr);
                 Json(ApiResponse::ok(RunScriptRsp { log })).into_response()
             }
-            Err(e) => {
-                Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response()
-            }
+            Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+                crate::api::error_codes::GENERIC,
+                &e.to_string(),
+            ))
+            .into_response(),
         }
     } else {
         let mut cmd = if req.name.to_lowercase().ends_with(".py") {
@@ -925,7 +967,11 @@ pub async fn delete_script_handler(Json(req): Json<DeleteScriptReq>) -> impl Int
     };
     match tokio::fs::remove_file(path).await {
         Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            &e.to_string(),
+        ))
+        .into_response(),
     }
 }
 
@@ -1042,7 +1088,11 @@ pub async fn enable_mdns_handler() -> impl IntoResponse {
     );
     match Command::new("sh").arg("-c").arg(cmd).status().await {
         Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        _ => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, "failed")).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            "failed",
+        ))
+        .into_response(),
     }
 }
 
@@ -1058,7 +1108,11 @@ pub async fn disable_mdns_handler() -> impl IntoResponse {
             Ok(s) if s.success() => {
                 Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
             }
-            _ => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, "failed")).into_response(),
+            _ => Json(ApiResponse::<serde_json::Value>::err(
+                crate::api::error_codes::GENERIC,
+                "failed",
+            ))
+            .into_response(),
         }
     } else {
         Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
@@ -1078,7 +1132,11 @@ pub async fn enable_ssh_handler() -> impl IntoResponse {
         .await
     {
         Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        _ => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, "failed")).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            "failed",
+        ))
+        .into_response(),
     }
 }
 
@@ -1090,7 +1148,11 @@ pub async fn disable_ssh_handler() -> impl IntoResponse {
         .await
     {
         Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        _ => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, "failed")).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            "failed",
+        ))
+        .into_response(),
     }
 }
 
@@ -1240,7 +1302,11 @@ pub async fn get_autostart_content_handler(Path(name): Path<String>) -> impl Int
     let path = std::path::Path::new(AUTOSTART_DIRECTORY).join(name);
     match tokio::fs::read_to_string(path).await {
         Ok(c) => Json(ApiResponse::ok(c)).into_response(),
-        Err(_) => Json(ApiResponse::<String>::err(-1, "read file fail")).into_response(),
+        Err(_) => Json(ApiResponse::<String>::err(
+            error_codes::GENERIC,
+            "failed to read autostart file",
+        ))
+        .into_response(),
     }
 }
 
@@ -1262,7 +1328,11 @@ pub async fn upload_autostart_handler(
             ))
             .into_response()
         }
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            &e.to_string(),
+        ))
+        .into_response(),
     }
 }
 
