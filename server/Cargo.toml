@@ -1,6 +1,6 @@
 [package]
 name = "nanokvm-server"
-version = "0.2.26"
+version = "0.2.27"
 edition = "2021"
 license = "GPL-3.0"
 description = "Rust implementation of NanoKVM server - IP-KVM for remote machine control"
@@ -54,6 +54,7 @@ jsonwebtoken = "9.3"
 axum-extra = { version = "0.10", features = ["cookie"] }
 get_if_addrs = "0.5"
 portable-pty = "0.8"
+serialport = "4.2"
 sha2 = "0.10"
 flate2 = "1.0"
 tar = "0.4"

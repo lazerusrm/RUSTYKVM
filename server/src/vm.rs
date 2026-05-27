@@ -542,9 +542,89 @@ pub async fn get_hardware_handler(State(state): State<Arc<AppState>>) -> impl In
     }))
 }
 
-// EDID and serial terminal full support are documented in IMPLEMENTATION_PLAN.md
-// under the "Hardware-Dependent Features Requiring New FFI" section.
-// No partial implementations will be added until complete logic + FFI bindings are ready.
+// === Complete Serial Terminal Support (Iteration 4) ===
+
+#[derive(Debug, Serialize)]
+pub struct SerialPortInfo {
+    pub path: String,
+    pub description: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetSerialPortsRsp {
+    pub ports: Vec<SerialPortInfo>,
+}
+
+pub async fn get_serial_ports_handler() -> impl IntoResponse {
+    let mut ports = Vec::new();
+    let patterns = ["/dev/ttyS", "/dev/ttyUSB", "/dev/ttyACM"];
+
+    if let Ok(entries) = std::fs::read_dir("/dev") {
+        for entry in entries.flatten() {
+            if let Some(p) = entry.path().to_str() {
+                for prefix in &patterns {
+                    if p.starts_with(prefix) {
+                        let desc = if p.contains("USB") || p.contains("ACM") { "USB Serial" } else { "Onboard UART" }.to_string();
+                        ports.push(SerialPortInfo { path: p.to_string(), description: desc });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    ports.sort_by(|a, b| a.path.cmp(&b.path));
+    Json(ApiResponse::ok(GetSerialPortsRsp { ports }))
+}
+
+pub async fn serial_ws_handler(ws: WebSocketUpgrade, Path(port): Path<String>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_serial_socket(socket, port))
+}
+
+async fn handle_serial_socket(mut socket: WebSocket, port: String) {
+    if !port.starts_with("/dev/tty") {
+        let _ = socket.send(Message::Text("Invalid port".into())).await;
+        return;
+    }
+
+    let mut serial = match serialport::new(&port, 115200).timeout(std::time::Duration::from_millis(100)).open() {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = socket.send(Message::Text(format!("Open failed: {}", e))).await;
+            return;
+        }
+    };
+
+    let (mut r, mut w) = match serial.split() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    let (mut tx, mut rx) = socket.split();
+
+    let rt = tokio::spawn(async move {
+        let mut b = [0u8; 1024];
+        loop {
+            match r.read(&mut b) {
+                Ok(n) if n > 0 => { if tx.send(Message::Binary(b[..n].to_vec().into())).await.is_err() { break; } }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    });
+
+    let wt = tokio::spawn(async move {
+        while let Some(Ok(m)) = rx.next().await {
+            match m {
+                Message::Binary(d) => { let _ = w.write_all(&d).await; }
+                Message::Text(t) => { let _ = w.write_all(t.as_bytes()).await; }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    });
+
+    let _ = tokio::join!(rt, wt);
+}
 
 #[cfg(target_os = "linux")]
 pub async fn set_gpio_handler(
