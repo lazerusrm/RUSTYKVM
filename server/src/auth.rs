@@ -201,7 +201,7 @@ pub async fn login_handler(
             return Json(ApiResponse::<()>::err(code, &msg)).into_response();
         }
 
-        return Json(ApiResponse::<()>::err(-2, "Invalid username or password")).into_response();
+        return Json(ApiResponse::<()>::err(crate::api::error_codes::AUTH, "Invalid username or password")).into_response();
     }
 
     // Success path
@@ -250,7 +250,7 @@ pub async fn login_handler(
             )
                 .into_response()
         }
-        Err(_) => Json(ApiResponse::<()>::err(-1, "Token generation failed")).into_response(),
+        Err(_) => Json(ApiResponse::<()>::err(crate::api::error_codes::GENERIC, "Token generation failed")).into_response(),
     }
 }
 
@@ -290,7 +290,7 @@ pub async fn change_password_handler(
         }
     }
 
-    Json(ApiResponse::<()>::err(-1, "Failed to change password")).into_response()
+    Json(ApiResponse::<()>::err(crate::api::error_codes::GENERIC, "Failed to change password")).into_response()
 }
 
 pub async fn is_password_updated_handler() -> impl IntoResponse {
@@ -312,7 +312,7 @@ pub async fn get_account_handler() -> impl IntoResponse {
 pub async fn get_encryption_key_handler() -> impl IntoResponse {
     match get_secret_key() {
         Ok(key) => Json(ApiResponse::ok(EncryptionKeyRsp { key })).into_response(),
-        Err(_) => Json(ApiResponse::<()>::err(-1, "Failed to get encryption key")).into_response(),
+        Err(_) => Json(ApiResponse::<()>::err(crate::api::error_codes::GENERIC, "Failed to get encryption key")).into_response(),
     }
 }
 

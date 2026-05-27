@@ -111,7 +111,7 @@ pub async fn delete_shortcut_handler(Json(req): Json<DeleteShortcutReq>) -> impl
         let _ = save_shortcuts(&shortcuts).await;
         Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
     } else {
-        Json(ApiResponse::<serde_json::Value>::err(-1, "not found")).into_response()
+        Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::NOT_FOUND, "not found")).into_response()
     }
 }
 
@@ -161,7 +161,7 @@ pub async fn set_hid_mode_handler(Json(req): Json<SetHidModeReq>) -> impl IntoRe
         });
         Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
     } else {
-        Json(ApiResponse::<serde_json::Value>::err(-1, "failed")).into_response()
+        Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, "failed")).into_response()
     }
 }
 
@@ -250,32 +250,8 @@ async fn save_shortcuts(shortcuts: &[Shortcut]) -> anyhow::Result<()> {
     Ok(())
 }
 
-// === P1 Stub: Mouse scroll wheel direction + speed (see IMPLEMENTATION_PLAN.md) ===
-#[derive(Debug, Deserialize)]
-pub struct ScrollConfigReq {
-    pub direction: Option<i32>, // -1 or 1
-    pub speed: Option<u8>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ScrollConfigRsp {
-    pub direction: i32,
-    pub speed: u8,
-    pub implemented: bool,
-}
-
-pub async fn get_scroll_config_handler() -> impl IntoResponse {
-    Json(ApiResponse::ok(ScrollConfigRsp {
-        direction: -1,
-        speed: 1,
-        implemented: false,
-    }))
-}
-
-pub async fn set_scroll_config_handler(Json(_req): Json<ScrollConfigReq>) -> impl IntoResponse {
-    // TODO: Persist + apply via HID/FFI layer (see plan)
-    Json(ApiResponse::<()>::err(501, "Mouse scroll config not yet implemented in Rust backend. See IMPLEMENTATION_PLAN.md"))
-}
+// Mouse wheel direction/speed full support (including HID report changes) is documented
+// in IMPLEMENTATION_PLAN.md. No partial/stub implementations will be shipped.
 
 fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
     let mut m = std::collections::HashMap::new();

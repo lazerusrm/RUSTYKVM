@@ -1,5 +1,22 @@
 use serde::Serialize;
 
+/// Standard error codes (aligned with common Go server conventions where applicable).
+/// Code 0 = success. Negative values = errors.
+pub mod error_codes {
+    /// Generic / unexpected error
+    pub const GENERIC: i32 = -1;
+    /// Authentication / authorization failure
+    pub const AUTH: i32 = -2;
+    /// Lockout / rate limit (e.g. brute force)
+    pub const LOCKED: i32 = -5;
+    /// Validation error (bad input)
+    pub const VALIDATION: i32 = -3;
+    /// Resource not found
+    pub const NOT_FOUND: i32 = -4;
+    /// Operation not supported / not implemented (use sparingly)
+    pub const NOT_SUPPORTED: i32 = -6;
+}
+
 /// API response wrapper matching the Go server format:
 /// `{ "code": 0, "msg": "success", "data": ... }`
 ///
