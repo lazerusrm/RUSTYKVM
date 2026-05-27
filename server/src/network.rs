@@ -53,11 +53,11 @@ pub async fn wol_handler(Json(req): Json<WakeOnLANReq>) -> impl IntoResponse {
             .into_response(),
             network::NetworkError::CommandFailed(msg) => {
                 error!("WoL command failed: {}", msg);
-                Json(ApiResponse::<serde_json::Value>::err(-3, &msg)).into_response()
+                Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::VALIDATION, &msg)).into_response()
             }
             _ => {
                 error!("WoL failed: {}", e);
-                Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
+                Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response()
             }
         },
     }
@@ -91,11 +91,11 @@ pub async fn set_wol_name_handler(Json(req): Json<SetMacNameReq>) -> impl IntoRe
         Err(e) => match e {
             network::NetworkError::InvalidMac(msg) => {
                 // Go uses a distinct code when the MAC isn't present in the cache.
-                Json(ApiResponse::<serde_json::Value>::err(-3, &msg)).into_response()
+                Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::VALIDATION, &msg)).into_response()
             }
             _ => {
                 error!("Failed to set WoL name: {}", e);
-                Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
+                Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response()
             }
         },
     }
@@ -106,7 +106,7 @@ pub async fn delete_wol_mac_handler(Json(req): Json<DeleteMacReq>) -> impl IntoR
         Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
         Err(e) => {
             error!("Failed to delete WoL MAC: {}", e);
-            Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
+            Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response()
         }
     }
 }
@@ -142,7 +142,7 @@ pub async fn connect_wifi_handler(Json(req): Json<ConnectWifiReq>) -> impl IntoR
         Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
         Err(e) => {
             error!("WiFi connect failed: {}", e);
-            Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
+            Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response()
         }
     }
 }
@@ -152,7 +152,7 @@ pub async fn disconnect_wifi_handler() -> impl IntoResponse {
         Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
         Err(e) => {
             error!("WiFi disconnect failed: {}", e);
-            Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
+            Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response()
         }
     }
 }
@@ -195,7 +195,7 @@ pub async fn set_ethernet_config_handler(
         }
         Err(e) => {
             error!("Failed to set ethernet config: {}", e);
-            Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
+            Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response()
         }
     }
 }

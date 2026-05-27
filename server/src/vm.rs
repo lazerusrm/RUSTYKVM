@@ -437,14 +437,14 @@ pub async fn set_tls_handler(
             });
             Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
         }
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response(),
     }
 }
 
 pub async fn set_oled_handler(Json(req): Json<SetOledReq>) -> impl IntoResponse {
     match tokio::fs::write(OLED_SLEEP_FILE, req.sleep.to_string()).await {
         Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response(),
     }
 }
 
@@ -610,7 +610,7 @@ pub async fn set_jiggler_handler(
 
     match res {
         Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response(),
     }
 }
 
@@ -810,7 +810,7 @@ pub async fn run_script_handler(Json(req): Json<RunScriptReq>) -> impl IntoRespo
                 Json(ApiResponse::ok(RunScriptRsp { log })).into_response()
             }
             Err(e) => {
-                Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
+                Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response()
             }
         }
     } else {
@@ -840,7 +840,7 @@ pub async fn delete_script_handler(Json(req): Json<DeleteScriptReq>) -> impl Int
     };
     match tokio::fs::remove_file(path).await {
         Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response(),
     }
 }
 
@@ -1139,7 +1139,7 @@ pub async fn upload_autostart_handler(
             ))
             .into_response()
         }
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(crate::api::error_codes::GENERIC, &e.to_string())).into_response(),
     }
 }
 
