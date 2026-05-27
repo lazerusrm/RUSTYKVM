@@ -5,9 +5,11 @@ use crate::config::Security;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::os::unix::fs::OpenOptionsExt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
 
 const STATE_FILE: &str = "/etc/kvm/brute_force_state.json";
@@ -50,9 +52,20 @@ impl BruteForce {
     }
 
     async fn load(&self) -> std::io::Result<()> {
-        if let Ok(data) = fs::read_to_string(STATE_FILE).await {
-            if let Ok(map) = serde_json::from_str::<HashMap<String, LoginAttempt>>(&data) {
-                *self.attempts.write() = map;
+        match fs::read_to_string(STATE_FILE).await {
+            Ok(data) => match serde_json::from_str::<HashMap<String, LoginAttempt>>(&data) {
+                Ok(map) => {
+                    *self.attempts.write() = map;
+                }
+                Err(e) => {
+                    warn!("Failed to parse brute force state file: {}", e);
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // First run is normal
+            }
+            Err(e) => {
+                warn!("Failed to read brute force state file: {}", e);
             }
         }
         Ok(())
@@ -60,8 +73,30 @@ impl BruteForce {
 
     async fn save(&self) {
         let map = self.attempts.read().clone();
-        if let Ok(json) = serde_json::to_string(&map) {
-            let _ = fs::write(STATE_FILE, json).await;
+        match serde_json::to_string(&map) {
+            Ok(json) => {
+                // Write with restrictive permissions (owner read/write only)
+                match OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(STATE_FILE)
+                    .await
+                {
+                    Ok(mut file) => {
+                        if let Err(e) = file.write_all(json.as_bytes()).await {
+                            warn!("Failed to write brute force state file: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to open brute force state file for writing: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to serialize brute force state: {}", e);
+            }
         }
     }
 
@@ -72,7 +107,6 @@ impl BruteForce {
         }
 
         let attempts = self.attempts.clone();
-        let policy = self.policy.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
@@ -90,7 +124,8 @@ impl BruteForce {
                     if a.lockout_end > 0 && now < a.lockout_end {
                         return true;
                     }
-                    if a.lockout_end == 0 && now.saturating_sub(a.last_failed) < IDLE_TTL.as_secs() {
+                    if a.lockout_end == 0 && now.saturating_sub(a.last_failed) < IDLE_TTL.as_secs()
+                    {
                         return true;
                     }
                     false
@@ -120,7 +155,8 @@ impl BruteForce {
             if attempt.lockout_end > 0 && now < attempt.lockout_end {
                 return Some((
                     -5,
-                    "Account locked due to too many failed attempts, please try again later".to_string(),
+                    "Account locked due to too many failed attempts, please try again later"
+                        .to_string(),
                 ));
             }
         }
@@ -157,7 +193,8 @@ impl BruteForce {
             self.save().await;
             return Some((
                 -5,
-                "Account locked due to too many failed attempts, please try again later".to_string(),
+                "Account locked due to too many failed attempts, please try again later"
+                    .to_string(),
             ));
         }
 
@@ -175,5 +212,54 @@ impl BruteForce {
             map.remove(ip);
         }
         self.save().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Security;
+
+    fn test_security(duration_secs: i32, max_failures: i32) -> Security {
+        Security {
+            login_lockout_duration: duration_secs,
+            login_max_failures: max_failures,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_basic_lockout_flow() {
+        let bf = BruteForce::new(test_security(300, 3)); // 5 min lock after 3 fails
+
+        let ip = "192.0.2.1";
+
+        assert!(bf.check(ip).is_none());
+
+        // First two failures should not lock
+        assert!(bf.record_failure(ip).await.is_none());
+        assert!(bf.record_failure(ip).await.is_none());
+
+        // Third failure should lock
+        let lock = bf.record_failure(ip).await;
+        assert!(lock.is_some());
+        assert_eq!(lock.unwrap().0, -5);
+
+        // Now it should be locked
+        let locked = bf.check(ip);
+        assert!(locked.is_some());
+        assert_eq!(locked.unwrap().0, -5);
+
+        // Clear should unlock
+        bf.clear(ip).await;
+        assert!(bf.check(ip).is_none());
+    }
+
+    #[test]
+    fn test_disabled_when_zero() {
+        let bf = BruteForce::new(test_security(0, 5));
+        assert!(!bf.is_enabled());
+
+        let bf2 = BruteForce::new(test_security(300, 0));
+        assert!(!bf2.is_enabled());
     }
 }

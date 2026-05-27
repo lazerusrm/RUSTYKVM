@@ -123,6 +123,10 @@ async fn save_account(account: &Account) -> anyhow::Result<()> {
 }
 
 fn get_session_ip(headers: &HeaderMap) -> Option<String> {
+    // SECURITY NOTE: IP is taken from X-Forwarded-For / X-Real-IP.
+    // This assumes the server is behind a trusted reverse proxy.
+    // If exposed directly to the internet, these headers can be spoofed.
+    // Consider adding trusted-proxy validation in production deployments.
     headers
         .get(&X_FORWARDED_FOR)
         .or(headers.get(&X_REAL_IP))
@@ -137,7 +141,6 @@ pub async fn login_handler(
     Json(req): Json<LoginReq>,
 ) -> impl IntoResponse {
     let ip_address = get_session_ip(&headers).unwrap_or_else(|| "unknown".to_string());
-    let policy = &state.config.password_policy;
 
     if state.config.authentication == "disable" {
         return (
@@ -152,6 +155,7 @@ pub async fn login_handler(
     }
 
     // === Brute force check (P0 security parity, now via AppState) ===
+    // Note: ip_address comes from potentially untrusted headers (see get_session_ip).
     if let Some((code, msg)) = state.brute_force.check(&ip_address) {
         // Match Go behavior: sleep on locked account
         tokio::time::sleep(Duration::from_secs(3)).await;

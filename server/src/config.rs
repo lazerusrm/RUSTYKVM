@@ -255,7 +255,10 @@ impl Default for PasswordPolicy {
 // Security config for parity with official Go version (server/config/types.go)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Security {
-    #[serde(rename = "loginLockoutDuration", default = "default_lockout_duration_sec")]
+    #[serde(
+        rename = "loginLockoutDuration",
+        default = "default_lockout_duration_sec"
+    )]
     pub login_lockout_duration: i32, // seconds, 0 = disabled (matches Go)
     #[serde(rename = "loginMaxFailures", default = "default_max_failures")]
     pub login_max_failures: i32,
@@ -273,8 +276,11 @@ impl Default for Security {
 // Migration helper: If new Security fields are at Go defaults (duration=0), copy from legacy PasswordPolicy lockout fields for backward compat.
 impl Config {
     pub fn migrate_legacy_lockout(&mut self) {
-        if self.security.login_lockout_duration == 0 && self.password_policy.lockout_duration_minutes > 0 {
-            self.security.login_lockout_duration = (self.password_policy.lockout_duration_minutes as i32) * 60;
+        if self.security.login_lockout_duration == 0
+            && self.password_policy.lockout_duration_minutes > 0
+        {
+            self.security.login_lockout_duration =
+                (self.password_policy.lockout_duration_minutes as i32) * 60;
         }
         if self.security.login_max_failures == 5 && self.password_policy.lockout_threshold > 0 {
             self.security.login_max_failures = self.password_policy.lockout_threshold as i32;
