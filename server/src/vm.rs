@@ -129,11 +129,15 @@ pub struct DeleteScriptReq {
 pub struct GetVirtualDeviceRsp {
     pub network: bool,
     pub disk: bool,
+    /// Current inquiry string for the virtual disk (if enabled)
+    pub disk_inquiry: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateVirtualDeviceReq {
     pub device: String,
+    /// Optional custom inquiry string when enabling disk
+    pub inquiry: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -198,6 +202,7 @@ const GOMEMLIMIT_FILE: &str = "/etc/kvm/GOMEMLIMIT";
 
 const VIRTUAL_NETWORK: &str = "/boot/usb.rndis0";
 const VIRTUAL_DISK: &str = "/boot/usb.disk0";
+const DISK_INQUIRY_FILE: &str = "/etc/kvm/virtual_disk_inquiry";
 
 const AVAHI_PID_FILE: &str = "/run/avahi-daemon/pid";
 const AVAHI_SCRIPT: &str = "/etc/init.d/S50avahi-daemon";
@@ -847,14 +852,28 @@ pub async fn delete_script_handler(Json(req): Json<DeleteScriptReq>) -> impl Int
 pub async fn get_virtual_device_handler() -> impl IntoResponse {
     let network = std::path::Path::new(VIRTUAL_NETWORK).exists();
     let disk = std::path::Path::new(VIRTUAL_DISK).exists();
-    Json(ApiResponse::ok(GetVirtualDeviceRsp { network, disk }))
+
+    let disk_inquiry = if disk {
+        tokio::fs::read_to_string(DISK_INQUIRY_FILE)
+            .await
+            .ok()
+            .map(|s| s.trim().to_string())
+    } else {
+        None
+    };
+
+    Json(ApiResponse::ok(GetVirtualDeviceRsp {
+        network,
+        disk,
+        disk_inquiry,
+    }))
 }
 
 pub async fn update_virtual_device_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpdateVirtualDeviceReq>,
 ) -> impl IntoResponse {
-    let (device_path, mount_cmds, unmount_commands) = match req.device.as_str() {
+    let (device_path, mount_cmds, unmount_commands, inquiry_path) = match req.device.as_str() {
         "network" => (
             VIRTUAL_NETWORK,
             vec![
@@ -868,6 +887,7 @@ pub async fn update_virtual_device_handler(
                 "rm /boot/usb.rndis0",
                 "/etc/init.d/S03usbdev start",
             ],
+            None,
         ),
         "disk" => (
             VIRTUAL_DISK,
@@ -882,27 +902,50 @@ pub async fn update_virtual_device_handler(
                 "rm /boot/usb.disk0",
                 "/etc/init.d/S03usbdev start",
             ],
+            Some("/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/inquiry_string"),
         ),
         _ => {
             return Json(ApiResponse::<serde_json::Value>::err(
-                -1,
+                crate::api::error_codes::VALIDATION,
                 "invalid arguments",
             ))
             .into_response()
         }
     };
+
     let exists = std::path::Path::new(device_path).exists();
     let cmds = if !exists {
         mount_cmds
     } else {
         unmount_commands
     };
+
     {
         let _hid = state.hid.lock().await;
         for cmd in cmds {
             let _ = Command::new("sh").arg("-c").arg(cmd).status().await;
         }
     }
+
+    // Handle inquiry string for disk (apply on enable or update)
+    if req.device == "disk" {
+        if let Some(inquiry) = &req.inquiry {
+            // Always persist latest inquiry string for disk
+            if let Err(e) = tokio::fs::write(DISK_INQUIRY_FILE, inquiry).await {
+                warn!("Failed to persist disk inquiry string: {}", e);
+            }
+
+            if !exists {
+                // Apply after gadget comes up
+                tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+            }
+
+            if let Some(sys_path) = inquiry_path {
+                let _ = tokio::fs::write(sys_path, inquiry).await;
+            }
+        }
+    }
+
     let on = std::path::Path::new(device_path).exists();
     Json(ApiResponse::ok(UpdateVirtualDeviceRsp { on })).into_response()
 }
