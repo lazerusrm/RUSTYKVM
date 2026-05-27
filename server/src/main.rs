@@ -68,16 +68,16 @@ use crate::application::{
     get_preview_handler, get_version_handler, offline_update_handler, set_preview_handler,
     update_handler,
 };
+use crate::auth::brute_force::BruteForce;
 use crate::auth::{
     auth_middleware, change_password_handler, get_account_handler, get_encryption_key_handler,
     is_password_updated_handler, login_handler, logout_handler,
 };
-use crate::auth::brute_force::BruteForce;
 use crate::config::Config;
 use crate::hid::{
     add_shortcut_handler, delete_shortcut_handler, get_hid_mode_handler, get_leader_key_handler,
-    get_scroll_config_handler, get_shortcuts_handler, paste_handler, reset_hid_handler,
-    set_hid_mode_handler, set_leader_key_handler, set_scroll_config_handler,
+    get_shortcuts_handler, paste_handler, reset_hid_handler,
+    set_hid_mode_handler, set_leader_key_handler,
 };
 use crate::network::{
     connect_wifi_handler, connect_wifi_no_auth_handler, delete_wol_mac_handler,
@@ -417,8 +417,6 @@ async fn main() {
             get(get_hid_mode_handler).post(set_hid_mode_handler),
         )
         .route("/hid/reset", post(reset_hid_handler))
-        // P1 stubs (backend only for now) - see IMPLEMENTATION_PLAN.md
-        .route("/hid/mouse/scroll", get(get_scroll_config_handler).post(set_scroll_config_handler))
         .route(
             "/network/wol",
             post(wol_handler)
