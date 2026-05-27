@@ -270,6 +270,18 @@ impl Default for Security {
     }
 }
 
+// Migration helper: If new Security fields are at Go defaults (duration=0), copy from legacy PasswordPolicy lockout fields for backward compat.
+impl Config {
+    pub fn migrate_legacy_lockout(&mut self) {
+        if self.security.login_lockout_duration == 0 && self.password_policy.lockout_duration_minutes > 0 {
+            self.security.login_lockout_duration = (self.password_policy.lockout_duration_minutes as i32) * 60;
+        }
+        if self.security.login_max_failures == 5 && self.password_policy.lockout_threshold > 0 {
+            self.security.login_max_failures = self.password_policy.lockout_threshold as i32;
+        }
+    }
+}
+
 fn default_lockout_duration_sec() -> i32 {
     0
 }
@@ -285,8 +297,9 @@ impl Config {
         if path.exists() {
             match fs::read_to_string(path).await {
                 Ok(content) => match serde_yaml::from_str::<Config>(&content) {
-                    Ok(config) => {
+                    Ok(mut config) => {
                         info!("Configuration loaded from {}", CONFIG_FILE);
+                        config.migrate_legacy_lockout();
                         return config;
                     }
                     Err(e) => {
