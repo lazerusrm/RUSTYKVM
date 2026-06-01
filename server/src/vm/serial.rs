@@ -87,7 +87,7 @@ async fn handle_serial_socket(mut socket: WebSocket, port: String, baud: u32) {
 
     let mut serial = match tokio_serial::new(&port, baud)
         .timeout(std::time::Duration::from_millis(100))
-        .open_async()
+        .open_native_async()
     {
         Ok(s) => s,
         Err(e) => {

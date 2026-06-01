@@ -82,18 +82,13 @@ impl BruteForce {
         match serde_json::to_string(&map) {
             Ok(json) => {
                 let tmp = format!("{}.tmp", STATE_FILE);
-               let builder = {
-                   let mut b = OpenOptions::new();
-                   b.create(true);
-                   b.write(true);
-                   b.truncate(true);
-                   #[cfg(unix)]
-                   {
-                       use std::os::unix::fs::OpenOptionsExt;
-                       b = b.mode(0o600);
-                   }
-                   b
-               };
+                let mut builder = OpenOptions::new();
+                builder.create(true).write(true).truncate(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    builder.mode(0o600);
+                }
                 match builder.open(&tmp).await {
                     Ok(mut file) => {
                         if let Err(e) = file.write_all(json.as_bytes()).await {

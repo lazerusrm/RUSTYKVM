@@ -25,8 +25,7 @@ const EDID_SIZE: usize = 256;
 const CUSTOM_EDID_FILE: &str = "/etc/kvm/edid.bin";
 
 /// Built-in 1080p template shipped with the official `nanokvm_update_edid` tool.
-const DEFAULT_EDID_BIN: &[u8] =
-    include_bytes!("../../../../NanoKVM/tools/nanokvm_update_edid/E21_NanoKVM.bin");
+const DEFAULT_EDID_BIN: &[u8] = include_bytes!("../../assets/edid/E21_NanoKVM.bin");
 
 /// Response for current EDID.
 #[derive(Debug, Serialize)]

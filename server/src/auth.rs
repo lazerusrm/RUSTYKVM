@@ -179,120 +179,16 @@ pub fn client_ip(
 }
 
 #[cfg(unix)]
+use axum::extract::ConnectInfo;
+
+#[cfg(unix)]
 pub async fn login_handler(
     State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-    headers: HeaderMap,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<LoginReq>,
-) -> impl IntoResponse {
-    let ip_address = get_session_ip(&headers).unwrap_or_else(|| peer.ip().to_string());
-
-    if state.config.authentication == "disable" {
-        let rsp = LoginRsp {
-            token: "disabled".to_string(),
-            requires_password_change: false,
-            password_expiry_days: None,
-        };
-        return (
-            jar,
-            Json(ApiResponse::ok(rsp)),
-        );
-    }
-
-    let account = get_account().await;
-
-    let plain_password = decrypt_password(&req.password).unwrap_or(req.password.clone());
-
-    let password_valid = verify(&plain_password, &account.password).unwrap_or(false);
-    let username_matches: bool = req
-        .username
-        .as_bytes()
-        .ct_eq(account.username.as_bytes())
-        .into();
-
-    if !password_valid || !username_matches {
-        // Record failure + possible lockout (now via AppState)
-        let lockout_err = state.brute_force.record_failure(&ip_address).await;
-
-        // Match Go timing attack mitigation
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        log_audit_event(
-            "login",
-            &req.username,
-            false,
-            "Invalid username or password",
-            Some(ip_address.clone()),
-        )
-        .await;
-
-        if let Some((code, msg)) = lockout_err {
-            return (StatusCode::UNAUTHORIZED, Json(ApiResponse::<()>::err(code, &msg)));
-        }
-
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(ApiResponse::<()>::err(
-                crate::api::error_codes::AUTH,
-                "Invalid username or password",
-            )),
-        );
-    }
-
-    // Success path
-    state.brute_force.clear(&ip_address).await;
-
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let exp =
-        Utc::now() + chrono::Duration::seconds(state.config.jwt.refresh_token_duration as i64);
-
-    let claims = Claims {
-        username: req.username.clone(),
-        exp: exp.timestamp() as usize,
-        requires_password_change: account.must_change_password,
-        session_id,
-    };
-
-    let secret = state.config.jwt.secret_key.as_bytes();
-    match encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret),
-    ) {
-        Ok(token) => {
-            let cookie = Cookie::build((COOKIE_NAME, token.clone()))
-                .path("/")
-                .http_only(false)
-                .same_site(SameSite::Lax)
-                .build();
-
-            log_audit_event(
-                "login",
-                &req.username,
-                true,
-                "Login successful",
-                Some(ip_address),
-            )
-            .await;
-
-            (
-                jar.add(cookie),
-                Json(ApiResponse::ok(LoginRsp {
-                    token,
-                    requires_password_change: account.must_change_password,
-                    password_expiry_days: None,
-                })),
-            )
-        }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<()>::err(
-                crate::api::error_codes::GENERIC,
-                "Token generation failed",
-            )),
-        ),
-    }
+) -> axum::response::Response {
+    login_handler_inner(state, headers, req, Some(peer)).await
 }
 
 /// Windows/dev host builds use a stub; production devices build for Linux.
