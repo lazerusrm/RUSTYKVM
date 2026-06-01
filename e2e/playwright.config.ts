@@ -1,6 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const baseURL = process.env.NANOKVM_BASE_URL ?? 'https://192.168.0.49';
+const baseURL = process.env.NANOKVM_BASE_URL ?? 'http://192.168.0.84';
 
 export default defineConfig({
   testDir: './tests',

@@ -445,12 +445,12 @@ async fn main() {
         .route("/hid/paste", post(paste_handler))
         .route("/hid/shortcuts", get(get_shortcuts_handler))
         .route(
-            "/hid/shortcut",
-            post(add_shortcut_handler).delete(delete_shortcut_handler),
-        )
-        .route(
             "/hid/shortcut/leader-key",
             get(get_leader_key_handler).post(set_leader_key_handler),
+        )
+        .route(
+            "/hid/shortcut",
+            post(add_shortcut_handler).delete(delete_shortcut_handler),
         )
         .route(
             "/hid/mode",

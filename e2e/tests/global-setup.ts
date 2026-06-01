@@ -10,6 +10,26 @@ async function sleep(ms: number) {
   await new Promise((r) => setTimeout(r, ms));
 }
 
+function encryptPassword(password: string, secretKey: string): string {
+  const crypto = require('crypto') as typeof import('crypto');
+  const salt = crypto.randomBytes(8);
+  let derived = Buffer.alloc(0);
+  let block = Buffer.alloc(0);
+  while (derived.length < 48) {
+    const h = crypto.createHash('md5');
+    if (block.length) h.update(block);
+    h.update(Buffer.from(secretKey, 'utf8'));
+    h.update(salt);
+    block = h.digest();
+    derived = Buffer.concat([derived, block]);
+  }
+  const key = derived.subarray(0, 32);
+  const iv = derived.subarray(32, 48);
+  const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+  const enc = Buffer.concat([cipher.update(password, 'utf8'), cipher.final()]);
+  return Buffer.concat([Buffer.from('Salted__'), salt, enc]).toString('base64');
+}
+
 async function globalSetup(config: FullConfig) {
   const baseURL = requiredEnv('NANOKVM_BASE_URL', config.projects[0]?.use?.baseURL as string | undefined);
   const username = requiredEnv('NANOKVM_USER', 'admin');
@@ -21,7 +41,13 @@ async function globalSetup(config: FullConfig) {
   let res: Awaited<ReturnType<typeof api.post>> | null = null;
   for (let i = 0; i < 20; i++) {
     try {
-      res = await api.post('/api/login', { data: { username, password } });
+      const keyRes = await api.get('/api/auth/encryption-key');
+      expect(keyRes.status()).toBe(200);
+      const keyBody = await keyRes.json();
+      const secretKey = keyBody?.data?.key as string | undefined;
+      expect(secretKey, 'Expected encryption key from /api/auth/encryption-key').toBeTruthy();
+      const encrypted = encryptPassword(password, secretKey!);
+      res = await api.post('/api/login', { data: { username, password: encrypted } });
       break;
     } catch (e) {
       lastErr = e;
