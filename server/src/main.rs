@@ -445,7 +445,7 @@ async fn main() {
         .route("/hid/paste", post(paste_handler))
         .route("/hid/shortcuts", get(get_shortcuts_handler))
         .route(
-            "/hid/shortcut/leader-key",
+            "/hid/leader-key",
             get(get_leader_key_handler).post(set_leader_key_handler),
         )
         .route(

@@ -1,11 +1,25 @@
 #!/bin/sh
-# NanoKVM-RS init script (hardened)
+# NanoKVM-RS init script (kvm_system + nanokvm-server)
 
 DAEMON=/kvmapp/nanokvm-server
 PIDFILE=/var/run/nanokvm.pid
 LOGFILE=/var/log/nanokvm.log
 
-export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/kvmapp/dl_lib:/kvmapp/server/dl_lib:$LD_LIBRARY_PATH
+
+start_kvm_system() {
+  echo "Starting kvm_system..."
+  killall kvm_system 2>/dev/null || true
+  rm -rf /tmp/kvm_system 2>/dev/null || true
+  cp -r /kvmapp/kvm_system /tmp/
+  /tmp/kvm_system/kvm_system &
+  sleep 1
+}
+
+stop_kvm_system() {
+  killall kvm_system 2>/dev/null || true
+  rm -rf /tmp/kvm_system 2>/dev/null || true
+}
 
 is_running() {
   [ -f "$PIDFILE" ] || return 1
@@ -18,14 +32,12 @@ start_nanosrv() {
   echo "Starting NanoKVM-RS..."
   cd /kvmapp || exit 1
 
-  # Clean stale pidfile
   if [ -f "$PIDFILE" ] && ! is_running; then
     rm -f "$PIDFILE"
   fi
 
   start-stop-daemon -S -b -m -p "$PIDFILE" -a "$DAEMON" -- >> "$LOGFILE" 2>&1
 
-  # Give the daemon a moment to bind ports; fail fast if it exited.
   sleep 1
   if ! is_running; then
     echo "NanoKVM-RS failed to start. Last 60 log lines:" >&2
@@ -40,19 +52,14 @@ stop_nanosrv() {
   echo "Stopping NanoKVM-RS..."
   if [ -f "$PIDFILE" ]; then
     start-stop-daemon -K -p "$PIDFILE" -s TERM 2>/dev/null || true
-
-    # Wait for exit to avoid restart races (ports still bound).
     for i in 1 2 3 4 5 6 7 8 9 10; do
       is_running || break
       sleep 0.5
     done
-
     rm -f "$PIDFILE"
-    echo "NanoKVM-RS stopped"
-  else
-    killall nanokvm-server 2>/dev/null || true
-    echo "NanoKVM-RS stopped (killall)"
   fi
+  killall nanokvm-server 2>/dev/null || true
+  echo "NanoKVM-RS stopped"
 }
 
 status_nanosrv() {
@@ -66,13 +73,22 @@ status_nanosrv() {
 
 case "$1" in
   start)
+    echo -n kvm > /boot/hostname.prefix 2>/dev/null || true
+    if [ -f /mnt/data/sensor_cfg.ini.LT ]; then
+      cp /mnt/data/sensor_cfg.ini.LT /mnt/data/sensor_cfg.ini
+    fi
+    start_kvm_system
     start_nanosrv
     ;;
   stop)
     stop_nanosrv
+    stop_kvm_system
     ;;
   restart)
     stop_nanosrv
+    stop_kvm_system
+    sleep 2
+    start_kvm_system
     start_nanosrv
     ;;
   status)
@@ -85,4 +101,3 @@ case "$1" in
 esac
 
 exit 0
-

@@ -2,7 +2,7 @@ use crate::api::ApiResponse;
 use crate::AppState;
 use axum::{
     extract::{Json, State},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use hid::{Shortcut, ShortcutKey};
 use serde::{Deserialize, Serialize};
@@ -185,7 +185,7 @@ pub async fn reset_hid_handler() -> impl IntoResponse {
     Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
-pub async fn set_leader_key_handler(Json(req): Json<SetLeaderKeyReq>) -> impl IntoResponse {
+pub async fn set_leader_key_handler(Json(req): Json<SetLeaderKeyReq>) -> Response {
     let key = req.key.trim().to_string();
     if key.is_empty() {
         match tokio::fs::remove_file(LEADER_KEY_FILE).await {
@@ -211,7 +211,7 @@ pub async fn set_leader_key_handler(Json(req): Json<SetLeaderKeyReq>) -> impl In
     }
 }
 
-pub async fn get_leader_key_handler() -> impl IntoResponse {
+pub async fn get_leader_key_handler() -> Response {
     match tokio::fs::read_to_string(LEADER_KEY_FILE).await {
         Ok(s) => Json(ApiResponse::ok(GetLeaderKeyRsp {
             key: s.trim().to_string(),
