@@ -129,6 +129,10 @@ pub struct SetupResponse {
     pub enrollment_url: String,
     pub qr_code: String,
     pub expires_at: String,
+    #[serde(rename = "challengeId", skip_serializing_if = "String::is_empty")]
+    pub challenge_id: String,
+    #[serde(rename = "setupToken", skip_serializing_if = "String::is_empty")]
+    pub setup_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

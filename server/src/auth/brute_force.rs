@@ -187,38 +187,43 @@ impl BruteForce {
         }
 
         let now = self.now();
-        let mut map = self.attempts.write();
+        let window = self.security.login_lockout_duration as u64;
+        let max_failures = self.security.login_max_failures as u32;
 
-        if map.len() >= MAX_RECORDS {
-            map.clear();
-        }
+        let locked = {
+            let mut map = self.attempts.write();
 
-        let window = self.security.login_lockout_duration as u64; // already in seconds, Go-style
-
-        let attempt = map.entry(ip.to_string()).or_default();
-
-        if attempt.last_failed > 0 && now.saturating_sub(attempt.last_failed) > window {
-            attempt.failures = 0;
-            attempt.lockout_end = 0;
-        }
-
-        attempt.failures += 1;
-        attempt.last_failed = now;
-
-            if attempt.failures >= self.security.login_max_failures as u32 {
-                attempt.lockout_end = now + window;
-                drop(map); // release lock before await
-                self.save().await;
-                return Some((
-                    error_codes::LOCKED,
-                    "Account locked due to too many failed attempts, please try again later"
-                        .to_string(),
-                ));
+            if map.len() >= MAX_RECORDS {
+                map.clear();
             }
 
-        drop(map);
+            let attempt = map.entry(ip.to_string()).or_default();
+
+            if attempt.last_failed > 0 && now.saturating_sub(attempt.last_failed) > window {
+                attempt.failures = 0;
+                attempt.lockout_end = 0;
+            }
+
+            attempt.failures += 1;
+            attempt.last_failed = now;
+
+            let lockout = attempt.failures >= max_failures;
+            if lockout {
+                attempt.lockout_end = now + window;
+            }
+            lockout
+        };
+
         self.save().await;
-        None
+
+        if locked {
+            Some((
+                error_codes::LOCKED,
+                "Account locked due to too many failed attempts, please try again later".to_string(),
+            ))
+        } else {
+            None
+        }
     }
 
     pub async fn clear(&self, ip: &str) {

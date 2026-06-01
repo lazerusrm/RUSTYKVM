@@ -206,7 +206,7 @@ pub async fn download_image_url_handler(Json(req): Json<DownloadImageUrlReq>) ->
     }
 
     let url_str = req.file.clone();
-    let url = match validate_remote_http_url(&url_str) {
+    let url = match validate_remote_http_url(&url_str).await {
         Ok(u) => u,
         Err(msg) => {
             return Json(ApiResponse::<serde_json::Value>::err(
@@ -249,7 +249,9 @@ pub async fn download_image_url_handler(Json(req): Json<DownloadImageUrlReq>) ->
 }
 
 async fn perform_url_download(url: String, filename: String) -> anyhow::Result<()> {
-    validate_remote_http_url(&url).map_err(|e| anyhow::anyhow!(e))?;
+    validate_remote_http_url(&url)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     let client = reqwest::Client::builder()
         .redirect(Policy::none())
         .build()?;

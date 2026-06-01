@@ -11,6 +11,8 @@ use tokio::sync::Mutex;
 
 pub struct PasskeyState {
     pub pending_challenge: Mutex<Option<PendingChallenge>>,
+    /// Recovery codes from the last completed enrollment (shown once to authenticated admin).
+    pub pending_recovery_codes: Mutex<Option<Vec<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -23,6 +25,8 @@ pub struct PendingChallenge {
     pub is_enrollment: bool,
     pub rp_id: String,
     pub credential_id: Option<String>,
+    /// Secret issued by authenticated setup; required to complete enrollment.
+    pub setup_token: String,
 }
 
 const CHALLENGE_TTL_MINUTES: i64 = 5;
@@ -37,6 +41,7 @@ impl PasskeyState {
     pub fn new() -> Self {
         Self {
             pending_challenge: Mutex::new(None),
+            pending_recovery_codes: Mutex::new(None),
         }
     }
 
@@ -51,6 +56,7 @@ impl PasskeyState {
         user_id: Vec<u8>,
         rp_id: String,
         credential_id: Option<String>,
+        setup_token: String,
     ) -> PendingChallenge {
         let now = chrono::Utc::now();
         PendingChallenge {
@@ -62,6 +68,7 @@ impl PasskeyState {
             is_enrollment: true,
             rp_id,
             credential_id,
+            setup_token,
         }
     }
 
@@ -82,6 +89,7 @@ impl PasskeyState {
             is_enrollment: false,
             rp_id,
             credential_id,
+            setup_token: String::new(),
         }
     }
 }

@@ -92,7 +92,7 @@ use crate::network::{
 use crate::network::{get_ethernet_config_handler, set_ethernet_config_handler};
 use crate::passkey::handlers::{
     enroll_complete_handler, login_challenge_handler, login_verify_handler, passkey_setup_handler,
-    passkey_status_handler, qr_code_handler, recover_handler, recovery_download_handler,
+    passkey_status_handler, qr_code_handler, recover_handler, setup_recovery_codes_handler,
 };
 use crate::storage::{
     delete_image_handler, get_cdrom_handler, get_images_handler, get_mounted_image_handler,
@@ -390,8 +390,8 @@ async fn main() {
         .route("/logout", post(logout_handler))
         .route("/passkey/setup", post(passkey_setup_handler))
         .route(
-            "/passkey/recovery/download",
-            get(recovery_download_handler),
+            "/passkey/setup/recovery-codes",
+            get(setup_recovery_codes_handler),
         )
         .route("/application/version", get(get_version_handler))
         .route("/application/update", post(update_handler))

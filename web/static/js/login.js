@@ -80,11 +80,11 @@ function setupEventListeners() {
     // Download recovery links
     document.getElementById('btn-download-recovery').addEventListener('click', (e) => {
         e.preventDefault();
-        window.location.href = `${API_BASE}/passkey/recovery/download`;
+        downloadSetupRecoveryCodes();
     });
     document.getElementById('btn-download-new-recovery').addEventListener('click', (e) => {
         e.preventDefault();
-        window.location.href = `${API_BASE}/passkey/recovery/download`;
+        downloadSetupRecoveryCodes();
     });
 }
 
@@ -257,11 +257,49 @@ async function pollForPasskeyVerification(challengeId) {
     await poll();
 }
 
-// Show recovery codes
+// Show recovery codes (one-time fetch after enrollment completes)
 async function showRecoveryCodes() {
-    // Recovery codes are shown after successful enrollment
-    // For now, just show a placeholder
-    document.getElementById('recovery-codes').innerHTML = 'Recovery codes will appear here after enrollment.';
+    try {
+        const response = await fetch(`${API_BASE}/passkey/setup/recovery-codes`, {
+            credentials: 'include'
+        });
+        const data = await response.json();
+        if (data.success && data.codes && data.codes.length > 0) {
+            const html = data.codes.map(c => `<div class="recovery-code">${c}</div>`).join('');
+            document.getElementById('recovery-codes').innerHTML = html;
+        } else {
+            document.getElementById('recovery-codes').innerHTML =
+                '<p>Recovery codes are saved on your enrolled device. Re-run setup if you need new codes.</p>';
+        }
+    } catch (error) {
+        document.getElementById('recovery-codes').innerHTML =
+            '<p>Could not load recovery codes. Save them from your phone after enrollment.</p>';
+    }
+}
+
+async function downloadSetupRecoveryCodes() {
+    try {
+        const response = await fetch(`${API_BASE}/passkey/setup/recovery-codes`, {
+            credentials: 'include'
+        });
+        const data = await response.json();
+        if (!data.codes || data.codes.length === 0) {
+            showError('No recovery codes available yet. Complete enrollment on your phone first.');
+            return;
+        }
+        const blob = new Blob(
+            [`Recovery Codes\n\n${data.codes.join('\n')}\n\nOne-time use only. Store securely.\n`],
+            { type: 'text/plain' }
+        );
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'nanokvm-recovery-codes.txt';
+        a.click();
+        URL.revokeObjectURL(url);
+    } catch (error) {
+        showError('Failed to download recovery codes');
+    }
 }
 
 // Handle recovery code
