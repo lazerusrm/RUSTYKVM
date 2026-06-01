@@ -1,16 +1,20 @@
 //! Brute-force protection module (P0 security parity).
 //! Clean, proper implementation matching the official Go version's behavior.
 
+use crate::api::error_codes;
 use crate::config::Security;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::os::unix::fs::OpenOptionsExt;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 const STATE_FILE: &str = "/etc/kvm/brute_force_state.json";
 const MAX_RECORDS: usize = 3000;
@@ -31,13 +35,15 @@ pub struct BruteForce {
 
 impl BruteForce {
     pub fn new(security: Security) -> Self {
-        let this = Self {
+        Self {
             attempts: RwLock::new(HashMap::new()),
             security,
-        };
-        // Best effort load from disk
-        let _ = this.load();
-        this
+        }
+    }
+
+    /// Load persisted lockout state from disk. Call once at startup before serving traffic.
+    pub async fn load_state(&self) -> std::io::Result<()> {
+        self.load().await
     }
 
     fn is_enabled(&self) -> bool {
@@ -75,22 +81,35 @@ impl BruteForce {
         let map = self.attempts.read().clone();
         match serde_json::to_string(&map) {
             Ok(json) => {
-                // Write with restrictive permissions (owner read/write only)
-                match OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(STATE_FILE)
-                    .await
-                {
+                let tmp = format!("{}.tmp", STATE_FILE);
+               let builder = {
+                   let mut b = OpenOptions::new();
+                   b.create(true);
+                   b.write(true);
+                   b.truncate(true);
+                   #[cfg(unix)]
+                   {
+                       use std::os::unix::fs::OpenOptionsExt;
+                       b = b.mode(0o600);
+                   }
+                   b
+               };
+                match builder.open(&tmp).await {
                     Ok(mut file) => {
                         if let Err(e) = file.write_all(json.as_bytes()).await {
-                            warn!("Failed to write brute force state file: {}", e);
+                            warn!("Failed to write brute force state temp file: {}", e);
+                            return;
+                        }
+                        if let Err(e) = file.sync_all().await {
+                            warn!("Failed to sync brute force state temp file: {}", e);
+                            return;
+                        }
+                        if let Err(e) = fs::rename(&tmp, STATE_FILE).await {
+                            warn!("Failed to commit brute force state file: {}", e);
                         }
                     }
                     Err(e) => {
-                        warn!("Failed to open brute force state file for writing: {}", e);
+                        warn!("Failed to open brute force state temp file: {}", e);
                     }
                 }
             }
@@ -101,19 +120,17 @@ impl BruteForce {
     }
 
     /// Spawn cleanup task (call once after construction).
-    pub fn spawn_cleanup(&self) {
+    pub fn spawn_cleanup(self: Arc<Self>) {
         if !self.is_enabled() {
             return;
         }
-
-        let attempts = self.attempts.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
             loop {
                 interval.tick().await;
 
-                let mut map = attempts.write();
+                let mut map = self.attempts.write();
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
@@ -154,7 +171,7 @@ impl BruteForce {
         if let Some(attempt) = map.get(ip) {
             if attempt.lockout_end > 0 && now < attempt.lockout_end {
                 return Some((
-                    -5,
+                    error_codes::LOCKED,
                     "Account locked due to too many failed attempts, please try again later"
                         .to_string(),
                 ));
@@ -187,16 +204,16 @@ impl BruteForce {
         attempt.failures += 1;
         attempt.last_failed = now;
 
-        if attempt.failures >= self.security.login_max_failures as u32 {
-            attempt.lockout_end = now + window;
-            drop(map); // release lock before await
-            self.save().await;
-            return Some((
-                -5,
-                "Account locked due to too many failed attempts, please try again later"
-                    .to_string(),
-            ));
-        }
+            if attempt.failures >= self.security.login_max_failures as u32 {
+                attempt.lockout_end = now + window;
+                drop(map); // release lock before await
+                self.save().await;
+                return Some((
+                    error_codes::LOCKED,
+                    "Account locked due to too many failed attempts, please try again later"
+                        .to_string(),
+                ));
+            }
 
         drop(map);
         self.save().await;
@@ -218,6 +235,7 @@ impl BruteForce {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::error_codes;
     use crate::config::Security;
 
     fn test_security(duration_secs: i32, max_failures: i32) -> Security {
@@ -242,12 +260,12 @@ mod tests {
         // Third failure should lock
         let lock = bf.record_failure(ip).await;
         assert!(lock.is_some());
-        assert_eq!(lock.unwrap().0, -5);
+        assert_eq!(lock.unwrap().0, error_codes::LOCKED);
 
         // Now it should be locked
         let locked = bf.check(ip);
         assert!(locked.is_some());
-        assert_eq!(locked.unwrap().0, -5);
+        assert_eq!(locked.unwrap().0, error_codes::LOCKED);
 
         // Clear should unlock
         bf.clear(ip).await;

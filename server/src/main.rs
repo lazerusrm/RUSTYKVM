@@ -52,17 +52,18 @@ use crate::webrtc::screen::{stop_frame_detect_handler, update_frame_detect_handl
 
 #[cfg(target_os = "linux")]
 use crate::vm::{
-    delete_autostart_handler, delete_script_handler, disable_hdmi_handler, disable_mdns_handler,
-    disable_ssh_handler, enable_hdmi_handler, enable_mdns_handler, enable_ssh_handler,
-    get_autostart_content_handler, get_autostart_handler, get_gpio_handler, get_hardware_handler,
-    get_hdmi_state_handler, get_hostname_handler, get_info_handler, get_jiggler_handler,
-    get_mdns_handler, get_memory_limit_handler, get_oled_handler, get_scripts_handler,
-    get_serial_ports_handler, get_ssh_handler, get_swap_handler, get_virtual_device_handler,
-    get_web_title_handler, reboot_handler, reset_hdmi_handler, run_script_handler,
-    serial_ws_handler, set_gpio_handler, set_hostname_handler, set_jiggler_handler,
-    set_memory_limit_handler, set_oled_handler, set_screen_handler, set_swap_handler,
-    set_tls_handler, set_web_title_handler, terminal_handler, update_virtual_device_handler,
-    upload_autostart_handler, upload_script_handler,
+    apply_default_edid_handler, delete_autostart_handler, delete_script_handler,
+    disable_hdmi_handler, disable_mdns_handler, disable_ssh_handler, enable_hdmi_handler,
+    enable_mdns_handler, enable_ssh_handler, get_autostart_content_handler, get_autostart_handler,
+    get_edid_handler, get_gpio_handler, get_hardware_handler, get_hdmi_state_handler,
+    get_hostname_handler, get_info_handler, get_jiggler_handler, get_mdns_handler,
+    get_memory_limit_handler, get_oled_handler, get_scripts_handler, get_serial_ports_handler,
+    get_ssh_handler, get_swap_handler, get_virtual_device_handler, get_web_title_handler,
+    reboot_handler, reset_hdmi_handler, run_script_handler, serial_ws_handler, set_edid_handler,
+    set_gpio_handler, set_hostname_handler, set_jiggler_handler, set_memory_limit_handler,
+    set_oled_handler, set_screen_handler, set_swap_handler, set_tls_handler, set_web_title_handler,
+    terminal_handler, update_virtual_device_handler, upload_autostart_handler,
+    upload_script_handler,
 };
 
 use crate::application::{
@@ -161,6 +162,8 @@ pub struct AppState {
     health_state: Arc<HealthState>,
     passkey_state: Arc<crate::passkey::PasskeyState>,
     brute_force: Arc<BruteForce>,
+    /// Live JWT signing secret (rotated on logout when configured).
+    jwt_secret: Arc<parking_lot::RwLock<String>>,
     // Server-managed mouse wheel direction + speed profile (optional enhancement,
     // wire protocol itself was already at Go parity). See hid/mouse_scroll.rs.
     mouse_scroll: Arc<crate::hid::mouse_scroll::MouseScrollStore>,
@@ -170,6 +173,7 @@ pub struct AppState {
 #[allow(dead_code)] // Fields for future audio streaming support
 pub struct AppState {
     config: Arc<Config>,
+    jwt_secret: Arc<parking_lot::RwLock<String>>,
     screen_config: crate::webrtc::screen::SharedScreenConfig,
     quality_controller: SharedQualityController,
     tx_mjpeg: broadcast::Sender<Bytes>,
@@ -286,15 +290,20 @@ async fn main() {
         passkey_state: passkey_state.clone(),
         brute_force: {
             let bf = Arc::new(BruteForce::new(config.security.clone()));
+            if let Err(e) = bf.load_state().await {
+                warn!("Failed to load brute force state: {}", e);
+            }
             bf.spawn_cleanup();
             bf
         },
+        jwt_secret: Arc::new(parking_lot::RwLock::new(config.jwt.secret_key.clone())),
         mouse_scroll: crate::hid::mouse_scroll::MouseScrollStore::new(),
     });
 
     #[cfg(not(target_os = "linux"))]
     let shared_state = Arc::new(AppState {
         config: config.clone(),
+        jwt_secret: Arc::new(parking_lot::RwLock::new(config.jwt.secret_key.clone())),
         screen_config: screen_config.clone(),
         quality_controller: quality_controller.clone(),
         tx_mjpeg,
@@ -308,6 +317,9 @@ async fn main() {
         passkey_state,
         brute_force: {
             let bf = Arc::new(BruteForce::new(config.security.clone()));
+            if let Err(e) = bf.load_state().await {
+                warn!("Failed to load brute force state: {}", e);
+            }
             bf.spawn_cleanup();
             bf
         },
@@ -323,6 +335,11 @@ async fn main() {
             *cached = Some(health);
         });
     }
+
+    // Re-apply persisted custom EDID on boot (complete parity logic)
+    tokio::spawn(async {
+        crate::vm::edid::load_and_apply_custom_edid_on_boot().await;
+    });
 
     // Spawn Producer Tasks (Linux Only)
     #[cfg(target_os = "linux")]
@@ -362,6 +379,14 @@ async fn main() {
     // 4. Build Router
     #[allow(unused_mut)] // mut needed for cfg(target_os = "linux") blocks
     let mut api_routes = Router::new()
+        // Go parity: account/password/logout require a valid session (or must-change-password JWT for POST password).
+        .route("/auth/account", get(get_account_handler))
+        .route(
+            "/auth/password",
+            get(is_password_updated_handler).post(change_password_handler),
+        )
+        .route("/auth/logout", post(logout_handler))
+        .route("/logout", post(logout_handler))
         .route("/application/version", get(get_version_handler))
         .route("/application/update", post(update_handler))
         .route("/application/update/offline", post(offline_update_handler))
@@ -479,7 +504,7 @@ async fn main() {
                 get(get_virtual_device_handler).post(update_virtual_device_handler),
             )
             .route("/vm/serial-ports", get(get_serial_ports_handler))
-            .route("/vm/serial/{port}", get(serial_ws_handler))
+            .route("/vm/serial/{*port}", get(serial_ws_handler))
             .route("/vm/gpio", get(get_gpio_handler).post(set_gpio_handler))
             .route(
                 "/vm/mouse-jiggler",
@@ -518,6 +543,8 @@ async fn main() {
             .route("/vm/hdmi/enable", post(enable_hdmi_handler))
             .route("/vm/hdmi/disable", post(disable_hdmi_handler))
             .route("/vm/screen", post(set_screen_handler))
+            .route("/vm/edid", get(get_edid_handler).post(set_edid_handler))
+            .route("/vm/edid/default", post(apply_default_edid_handler))
             .route("/vm/reboot", post(reboot_handler))
             // Go frontend expects this path.
             .route("/vm/system/reboot", post(reboot_handler))
@@ -585,17 +612,10 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health_check_handler))
         .route("/api/system/capabilities", get(capabilities_handler))
-        // Auth routes (outside of api_routes so they don't require auth)
+        // Public auth routes (login + pre-login encryption key)
         .route("/api/login", post(login_handler))
-        .route("/api/logout", post(logout_handler))
         .route("/api/auth/login", post(login_handler))
-        .route("/api/auth/account", get(get_account_handler))
         .route("/api/auth/encryption-key", get(get_encryption_key_handler))
-        .route(
-            "/api/auth/password",
-            get(is_password_updated_handler).post(change_password_handler),
-        )
-        .route("/api/auth/logout", post(logout_handler))
         // Passkey authentication routes (unauthenticated)
         .route("/api/passkey/status", get(passkey_status_handler))
         .route("/api/passkey/setup", post(passkey_setup_handler))
@@ -665,10 +685,13 @@ async fn main() {
                     "Server listening on {} (HTTP - TLS fallback, TCP_NODELAY enabled)",
                     http_addr
                 );
-                axum::serve(listener, app)
-                    .with_graceful_shutdown(shutdown_signal())
-                    .await
-                    .expect("HTTP server failed");
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+                .expect("HTTP server failed");
                 return;
             }
         };
@@ -711,7 +734,7 @@ async fn main() {
         });
         axum_server::bind_rustls(https_addr, tls_config)
             .handle(handle)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await
             .expect("HTTPS server failed");
     } else {
@@ -723,10 +746,13 @@ async fn main() {
             "Server listening on {} (HTTP, TCP_NODELAY enabled)",
             http_addr
         );
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
-            .await
-            .expect("HTTP server failed");
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("HTTP server failed");
     }
 }
 

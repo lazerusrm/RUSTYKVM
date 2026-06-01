@@ -6,6 +6,9 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+#[cfg(unix)]
+use axum::extract::ConnectInfo;
+use std::net::SocketAddr;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -14,6 +17,7 @@ static X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 static X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
 use crate::api::ApiResponse;
 use crate::utils::{decrypt_password, get_secret_key};
+use crate::config::Config;
 use crate::AppState;
 use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::Utc;
@@ -24,7 +28,7 @@ use subtle::ConstantTimeEq;
 use tokio::fs;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, error, warn};
+use tracing::{error, warn};
 
 pub mod brute_force;
 
@@ -122,25 +126,63 @@ async fn save_account(account: &Account) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn get_session_ip(headers: &HeaderMap) -> Option<String> {
-    // SECURITY NOTE: IP is taken from X-Forwarded-For / X-Real-IP.
-    // This assumes the server is behind a trusted reverse proxy.
-    // If exposed directly to the internet, these headers can be spoofed.
-    // Consider adding trusted-proxy validation in production deployments.
-    headers
-        .get(&X_FORWARDED_FOR)
-        .or(headers.get(&X_REAL_IP))
-        .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_string())
+/// Resolve client IP for brute-force tracking.
+/// Default: socket peer only. Forwarded headers are honored only when `trustForwardedHeaders` is set in config.
+pub fn client_ip(
+    headers: &HeaderMap,
+    peer: Option<SocketAddr>,
+    trust_forwarded: bool,
+) -> String {
+    if trust_forwarded {
+        if let Some(h) = headers.get(&X_FORWARDED_FOR).and_then(|h| h.to_str().ok()) {
+            if let Some(ip) = h.split(',').next().map(str::trim).filter(|s| !s.is_empty()) {
+                return ip.to_string();
+            }
+        }
+        if let Some(h) = headers.get(&X_REAL_IP).and_then(|h| h.to_str().ok()) {
+            let ip = h.trim();
+            if !ip.is_empty() {
+                return ip.to_string();
+            }
+        }
+    }
+    peer.map(|a| a.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
+#[cfg(unix)]
+pub async fn login_handler(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(req): Json<LoginReq>,
+) -> Response {
+    login_handler_inner(state, jar, headers, req, Some(peer)).await
+}
+
+#[cfg(not(unix))]
 pub async fn login_handler(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
     headers: HeaderMap,
     Json(req): Json<LoginReq>,
-) -> impl IntoResponse {
-    let ip_address = get_session_ip(&headers).unwrap_or_else(|| "unknown".to_string());
+) -> Response {
+    login_handler_inner(state, jar, headers, req, None).await
+}
+
+async fn login_handler_inner(
+    state: Arc<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    req: LoginReq,
+    peer: Option<SocketAddr>,
+) -> axum::response::Response {
+    let ip_address = client_ip(
+        &headers,
+        peer,
+        state.config.security.trust_forwarded_headers,
+    );
 
     if state.config.authentication == "disable" {
         return (
@@ -201,7 +243,11 @@ pub async fn login_handler(
             return Json(ApiResponse::<()>::err(code, &msg)).into_response();
         }
 
-        return Json(ApiResponse::<()>::err(crate::api::error_codes::AUTH, "Invalid username or password")).into_response();
+        return Json(ApiResponse::<()>::err(
+            crate::api::error_codes::AUTH,
+            "Invalid username or password",
+        ))
+        .into_response();
     }
 
     // Success path
@@ -218,11 +264,11 @@ pub async fn login_handler(
         session_id,
     };
 
-    let secret = state.config.jwt.secret_key.as_bytes();
+    let signing_key = state.jwt_secret.read().clone();
     match encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(secret),
+        &EncodingKey::from_secret(signing_key.as_bytes()),
     ) {
         Ok(token) => {
             let cookie = Cookie::build((COOKIE_NAME, token.clone()))
@@ -250,11 +296,28 @@ pub async fn login_handler(
             )
                 .into_response()
         }
-        Err(_) => Json(ApiResponse::<()>::err(crate::api::error_codes::GENERIC, "Token generation failed")).into_response(),
+        Err(_) => Json(ApiResponse::<()>::err(
+            crate::api::error_codes::GENERIC,
+            "Token generation failed",
+        ))
+        .into_response(),
     }
 }
 
-pub async fn logout_handler(jar: CookieJar) -> impl IntoResponse {
+pub async fn logout_handler(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+) -> impl IntoResponse {
+    if state.config.jwt.revoke_tokens_on_logout {
+        let new_secret = crate::config::generate_jwt_secret_key();
+        *state.jwt_secret.write() = new_secret.clone();
+        let mut disk_config = Config::load().await;
+        disk_config.jwt.secret_key = new_secret;
+        if let Err(e) = disk_config.save().await {
+            warn!("logout: failed to persist rotated JWT secret: {}", e);
+        }
+    }
+
     let cookie = Cookie::build((COOKIE_NAME, ""))
         .path("/")
         .max_age(Duration::ZERO.try_into().unwrap())
@@ -267,37 +330,127 @@ pub async fn logout_handler(jar: CookieJar) -> impl IntoResponse {
         .into_response()
 }
 
+#[cfg(target_os = "linux")]
+async fn change_root_password(password: &str) -> Result<(), String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    use tokio::process::Command;
+
+    let mut child = Command::new("passwd")
+        .arg("root")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("failed to spawn passwd: {}", e))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "passwd stdin unavailable".to_string())?;
+
+    stdin
+        .write_all(format!("{}\n", password).as_bytes())
+        .await
+        .map_err(|e| format!("passwd write failed: {}", e))?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    stdin
+        .write_all(format!("{}\n", password).as_bytes())
+        .await
+        .map_err(|e| format!("passwd confirm failed: {}", e))?;
+    drop(stdin);
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("passwd wait failed: {}", e))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("passwd root failed".to_string())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn change_root_password(_password: &str) -> Result<(), String> {
+    Ok(())
+}
+
 pub async fn change_password_handler(
     State(_state): State<Arc<AppState>>,
     Json(req): Json<ChangePasswordReq>,
 ) -> impl IntoResponse {
-    let mut account = get_account().await;
-
-    let new_plain = decrypt_password(&req.password).unwrap_or(req.password.clone());
-
-    if let Ok(hashed) = hash(new_plain, DEFAULT_COST) {
-        account.username = req.username;
-        account.password = hashed;
-        account.must_change_password = false;
-        account.last_password_change = Some(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        );
-        if save_account(&account).await.is_ok() {
-            return Json(ApiResponse::ok(())).into_response();
-        }
+    let account = get_account().await;
+    if req.username.as_bytes().ct_ne(account.username.as_bytes()).into() {
+        return Json(ApiResponse::<()>::err(
+            crate::api::error_codes::AUTH,
+            "Invalid username",
+        ))
+        .into_response();
     }
 
-    Json(ApiResponse::<()>::err(crate::api::error_codes::GENERIC, "Failed to change password")).into_response()
+    let new_plain = match decrypt_password(&req.password) {
+        Ok(p) if !p.is_empty() => p,
+        _ => {
+            return Json(ApiResponse::<()>::err(
+                crate::api::error_codes::VALIDATION,
+                "invalid password",
+            ))
+            .into_response();
+        }
+    };
+
+    let hashed = match hash(new_plain.as_str(), DEFAULT_COST) {
+        Ok(h) => h,
+        Err(_) => {
+            return Json(ApiResponse::<()>::err(
+                crate::api::error_codes::GENERIC,
+                "failed to hash password",
+            ))
+            .into_response();
+        }
+    };
+
+    let mut updated = account;
+    updated.username = req.username;
+    updated.password = hashed;
+    updated.must_change_password = false;
+    updated.last_password_change = Some(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    );
+
+    if let Err(e) = save_account(&updated).await {
+        return Json(ApiResponse::<()>::err(
+            crate::api::error_codes::GENERIC,
+            &format!("failed to save password: {}", e),
+        ))
+        .into_response();
+    }
+
+    if let Err(e) = change_root_password(&new_plain).await {
+        let _ = tokio::fs::remove_file(PWD_FILE).await;
+        return Json(ApiResponse::<()>::err(
+            crate::api::error_codes::GENERIC,
+            &format!("failed to change root password: {}", e),
+        ))
+        .into_response();
+    }
+
+    Json(ApiResponse::ok(())).into_response()
 }
 
 pub async fn is_password_updated_handler() -> impl IntoResponse {
-    let updated = Path::new(PWD_FILE).exists();
-    Json(ApiResponse::ok(IsPasswordUpdatedRsp {
-        is_updated: updated,
-    }))
+    if !Path::new(PWD_FILE).exists() {
+        return Json(ApiResponse::ok(IsPasswordUpdatedRsp { is_updated: false })).into_response();
+    }
+
+    let account = get_account().await;
+    // Match Go: updated when stored hash no longer matches default "admin" password.
+    let is_updated = !verify("admin", &account.password).unwrap_or(false);
+    Json(ApiResponse::ok(IsPasswordUpdatedRsp { is_updated })).into_response()
 }
 
 pub async fn get_account_handler() -> impl IntoResponse {
@@ -312,7 +465,11 @@ pub async fn get_account_handler() -> impl IntoResponse {
 pub async fn get_encryption_key_handler() -> impl IntoResponse {
     match get_secret_key() {
         Ok(key) => Json(ApiResponse::ok(EncryptionKeyRsp { key })).into_response(),
-        Err(_) => Json(ApiResponse::<()>::err(crate::api::error_codes::GENERIC, "Failed to get encryption key")).into_response(),
+        Err(_) => Json(ApiResponse::<()>::err(
+            crate::api::error_codes::GENERIC,
+            "Failed to get encryption key",
+        ))
+        .into_response(),
     }
 }
 
@@ -338,9 +495,13 @@ pub async fn auth_middleware(
         });
 
     if let Some(token) = token {
-        let secret = state.config.jwt.secret_key.as_bytes();
+        let signing_key = state.jwt_secret.read().clone();
         let validation = Validation::new(Algorithm::HS256);
-        if let Ok(data) = decode::<Claims>(&token, &DecodingKey::from_secret(secret), &validation) {
+        if let Ok(data) = decode::<Claims>(
+            &token,
+            &DecodingKey::from_secret(signing_key.as_bytes()),
+            &validation,
+        ) {
             if !data.claims.requires_password_change || req.uri().path().contains("/auth/password")
             {
                 return next.run(req).await;
@@ -406,11 +567,11 @@ pub async fn generate_token(
         session_id,
     };
 
-    let secret = state.config.jwt.secret_key.as_bytes();
+    let signing_key = state.jwt_secret.read().clone();
     match encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(secret),
+        &EncodingKey::from_secret(signing_key.as_bytes()),
     ) {
         Ok(token) => Ok(token),
         Err(_) => Err("Token generation failed".to_string()),

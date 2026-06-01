@@ -20,7 +20,7 @@ network = { path = "../network" }
 audio = { path = "../audio", optional = true }
 tokio = { version = "1.43", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-axum = { version = "0.8", features = ["ws", "multipart"] }
+axum = { version = "0.8.8", features = ["ws", "multipart"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 tower-http = { version = "0.6", features = ["fs", "trace", "set-header", "cors"] }
 libc = "0.2"
@@ -54,7 +54,7 @@ jsonwebtoken = "9.3"
 axum-extra = { version = "0.10", features = ["cookie"] }
 get_if_addrs = "0.5"
 portable-pty = "0.8"
-serialport = "4.2"
+tokio-serial = { version = "5.4" }
 sha2 = "0.10"
 flate2 = "1.0"
 tar = "0.4"

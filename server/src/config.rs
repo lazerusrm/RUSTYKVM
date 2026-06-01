@@ -262,6 +262,9 @@ pub struct Security {
     pub login_lockout_duration: i32, // seconds, 0 = disabled (matches Go)
     #[serde(rename = "loginMaxFailures", default = "default_max_failures")]
     pub login_max_failures: i32,
+    /// When true, honor X-Forwarded-For / X-Real-IP (only safe behind a trusted reverse proxy).
+    #[serde(rename = "trustForwardedHeaders", default)]
+    pub trust_forwarded_headers: bool,
 }
 
 impl Default for Security {
@@ -269,8 +272,14 @@ impl Default for Security {
         Self {
             login_lockout_duration: 0, // disabled by default for safety, like Go
             login_max_failures: 5,
+            trust_forwarded_headers: false,
         }
     }
+}
+
+/// Generate a new JWT signing secret (matches Go config.generateRandomSecretKey).
+pub fn generate_jwt_secret_key() -> String {
+    generate_random_secret()
 }
 
 // Migration helper: If new Security fields are at Go defaults (duration=0), copy from legacy PasswordPolicy lockout fields for backward compat.
@@ -345,6 +354,7 @@ impl Default for Config {
             stun: DEFAULT_STUN.to_string(),
             turn: Turn::default(),
             password_policy: PasswordPolicy::default(),
+            security: Security::default(),
         }
     }
 }
