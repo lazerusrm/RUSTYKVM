@@ -4,6 +4,7 @@
 //! (direct I2C to the LT6911 receiver). This module provides equivalent API access.
 
 #[cfg(target_os = "linux")]
+#[path = "edid_i2c.rs"]
 mod edid_i2c;
 
 use crate::api::{error_codes, ApiResponse};
