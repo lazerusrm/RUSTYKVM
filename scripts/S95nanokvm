@@ -31,6 +31,7 @@ is_running() {
 start_nanosrv() {
   echo "Starting NanoKVM-RS..."
   cd /kvmapp || exit 1
+  killall NanoKVM-Server 2>/dev/null || true
 
   if [ -f "$PIDFILE" ] && ! is_running; then
     rm -f "$PIDFILE"
@@ -38,7 +39,16 @@ start_nanosrv() {
 
   start-stop-daemon -S -b -m -p "$PIDFILE" -a "$DAEMON" -- >> "$LOGFILE" 2>&1
 
-  sleep 1
+  i=0
+  while [ "$i" -lt 20 ]; do
+    if is_running; then
+      if wget -q -O /dev/null http://127.0.0.1/health 2>/dev/null; then
+        break
+      fi
+    fi
+    i=$((i + 1))
+    sleep 0.5
+  done
   if ! is_running; then
     echo "NanoKVM-RS failed to start. Last 60 log lines:" >&2
     tail -n 60 "$LOGFILE" 2>/dev/null >&2 || true
@@ -50,6 +60,7 @@ start_nanosrv() {
 
 stop_nanosrv() {
   echo "Stopping NanoKVM-RS..."
+  killall NanoKVM-Server 2>/dev/null || true
   if [ -f "$PIDFILE" ]; then
     start-stop-daemon -K -p "$PIDFILE" -s TERM 2>/dev/null || true
     for i in 1 2 3 4 5 6 7 8 9 10; do
