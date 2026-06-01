@@ -1,8 +1,10 @@
 use crate::api::{error_codes, ApiResponse};
+use crate::url_safety::validate_remote_http_url;
 use axum::{
     extract::{Json, Multipart},
     response::IntoResponse,
 };
+use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::fs;
@@ -204,12 +206,12 @@ pub async fn download_image_url_handler(Json(req): Json<DownloadImageUrlReq>) ->
     }
 
     let url_str = req.file.clone();
-    let url = match url::Url::parse(&url_str) {
+    let url = match validate_remote_http_url(&url_str) {
         Ok(u) => u,
-        Err(_) => {
+        Err(msg) => {
             return Json(ApiResponse::<serde_json::Value>::err(
                 error_codes::VALIDATION,
-                "invalid url",
+                &msg,
             ))
             .into_response()
         }
@@ -247,7 +249,11 @@ pub async fn download_image_url_handler(Json(req): Json<DownloadImageUrlReq>) ->
 }
 
 async fn perform_url_download(url: String, filename: String) -> anyhow::Result<()> {
-    let resp = reqwest::get(&url).await?;
+    validate_remote_http_url(&url).map_err(|e| anyhow::anyhow!(e))?;
+    let client = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()?;
+    let resp = client.get(&url).send().await?;
     if !resp.status().is_success() {
         return Err(anyhow::anyhow!("Server returned {}", resp.status()));
     }

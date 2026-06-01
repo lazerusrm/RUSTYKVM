@@ -12,6 +12,7 @@ mod storage_health;
 mod tailscale;
 mod utils;
 mod vm;
+mod url_safety;
 mod webrtc;
 
 use crate::api::ApiResponse;
@@ -293,7 +294,7 @@ async fn main() {
             if let Err(e) = bf.load_state().await {
                 warn!("Failed to load brute force state: {}", e);
             }
-            bf.spawn_cleanup();
+            BruteForce::spawn_cleanup(&bf);
             bf
         },
         jwt_secret: Arc::new(parking_lot::RwLock::new(config.jwt.secret_key.clone())),
@@ -320,7 +321,7 @@ async fn main() {
             if let Err(e) = bf.load_state().await {
                 warn!("Failed to load brute force state: {}", e);
             }
-            bf.spawn_cleanup();
+            BruteForce::spawn_cleanup(&bf);
             bf
         },
         mouse_scroll: crate::hid::mouse_scroll::MouseScrollStore::new(),
@@ -387,6 +388,11 @@ async fn main() {
         )
         .route("/auth/logout", post(logout_handler))
         .route("/logout", post(logout_handler))
+        .route("/passkey/setup", post(passkey_setup_handler))
+        .route(
+            "/passkey/recovery/download",
+            get(recovery_download_handler),
+        )
         .route("/application/version", get(get_version_handler))
         .route("/application/update", post(update_handler))
         .route("/application/update/offline", post(offline_update_handler))
@@ -616,9 +622,8 @@ async fn main() {
         .route("/api/login", post(login_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/encryption-key", get(get_encryption_key_handler))
-        // Passkey authentication routes (unauthenticated)
+        // Passkey login/recovery/enrollment (setup + recovery download require auth in api_routes)
         .route("/api/passkey/status", get(passkey_status_handler))
-        .route("/api/passkey/setup", post(passkey_setup_handler))
         .route("/api/passkey/enroll", post(enroll_complete_handler))
         .route(
             "/api/passkey/login/challenge",
@@ -626,10 +631,6 @@ async fn main() {
         )
         .route("/api/passkey/login/verify", post(login_verify_handler))
         .route("/api/passkey/recover", post(recover_handler))
-        .route(
-            "/api/passkey/recovery/download",
-            get(recovery_download_handler),
-        )
         .route("/api/passkey/qr", get(qr_code_handler))
         // Connect Wi-Fi without auth (only in AP mode), matching Go backend.
         .route("/api/network/wifi", post(connect_wifi_no_auth_handler))

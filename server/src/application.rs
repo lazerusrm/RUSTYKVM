@@ -8,7 +8,7 @@ use reqwest::header;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 use std::env;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{error, info, warn};
 
@@ -317,15 +317,39 @@ async fn perform_update() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn install_package(archive_path: &Path) -> anyhow::Result<()> {
+fn is_safe_tar_entry_path(path: &Path) -> bool {
+    path.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+}
+
+fn unpack_archive_safely(archive_path: &Path, extract_dir: &Path) -> anyhow::Result<()> {
     let file = std::fs::File::open(archive_path)?;
     let tar = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(tar);
 
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_path_buf();
+        if !is_safe_tar_entry_path(&path) {
+            return Err(anyhow::anyhow!(
+                "unsafe path in update archive: {}",
+                path.display()
+            ));
+        }
+        if entry.header().entry_type().is_symlink() {
+            return Err(anyhow::anyhow!(
+                "symlink/hardlink entries are not allowed in update archives"
+            ));
+        }
+        entry.unpack_in(extract_dir)?;
+    }
+    Ok(())
+}
+
+async fn install_package(archive_path: &Path) -> anyhow::Result<()> {
     let extract_dir = Path::new(CACHE_DIR).join("extracted");
     let _ = tokio::fs::remove_dir_all(&extract_dir).await;
     tokio::fs::create_dir_all(&extract_dir).await?;
-    archive.unpack(&extract_dir)?;
+    unpack_archive_safely(archive_path, &extract_dir)?;
 
     // Run installer from within the package.
     // This avoids replacing the entire /kvmapp tree, and matches how our GitHub upgrade tarballs are structured.

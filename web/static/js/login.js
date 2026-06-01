@@ -80,11 +80,11 @@ function setupEventListeners() {
     // Download recovery links
     document.getElementById('btn-download-recovery').addEventListener('click', (e) => {
         e.preventDefault();
-        window.location.href = `${API_BASE}/auth/recovery/download`;
+        window.location.href = `${API_BASE}/passkey/recovery/download`;
     });
     document.getElementById('btn-download-new-recovery').addEventListener('click', (e) => {
         e.preventDefault();
-        window.location.href = `${API_BASE}/auth/recovery/download`;
+        window.location.href = `${API_BASE}/passkey/recovery/download`;
     });
 }
 
@@ -170,6 +170,7 @@ async function startSetup() {
     try {
         const response = await fetch(`${API_BASE}/passkey/setup`, {
             method: 'POST',
+            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ device_name: 'Phone' })
         });
@@ -274,7 +275,7 @@ async function handleRecovery() {
     clearMessages();
 
     try {
-        const response = await fetch(`${API_BASE}/auth/recover`, {
+        const response = await fetch(`${API_BASE}/passkey/recover`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ recovery_code: code })

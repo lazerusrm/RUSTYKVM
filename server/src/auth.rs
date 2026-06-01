@@ -2,7 +2,7 @@
 
 use axum::{
     extract::{Json, State},
-    http::{header, HeaderMap, HeaderName, Request, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -35,6 +35,36 @@ pub mod brute_force;
 const COOKIE_NAME: &str = "nano-kvm-token";
 const PWD_FILE: &str = "/etc/kvm/pwd";
 const AUDIT_LOG_FILE: &str = "/var/log/nanokvm_auth.log";
+
+fn build_session_cookie(token: &str, secure: bool) -> Cookie<'static> {
+    let mut builder = Cookie::build((COOKIE_NAME, token.to_string()))
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Lax);
+    if secure {
+        builder = builder.secure(true);
+    }
+    builder.build()
+}
+
+fn attach_cookie(mut response: Response, cookie: Cookie<'static>) -> Response {
+    if let Ok(value) = HeaderValue::from_str(&cookie.to_string()) {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+    response
+}
+
+fn clear_session_cookie(secure: bool) -> Cookie<'static> {
+    let mut builder = Cookie::build((COOKIE_NAME, ""))
+        .path("/")
+        .max_age(Duration::ZERO.try_into().unwrap())
+        .http_only(true)
+        .same_site(SameSite::Lax);
+    if secure {
+        builder = builder.secure(true);
+    }
+    builder.build()
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
@@ -154,26 +184,27 @@ pub fn client_ip(
 pub async fn login_handler(
     State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    jar: CookieJar,
     headers: HeaderMap,
     Json(req): Json<LoginReq>,
 ) -> Response {
-    login_handler_inner(state, jar, headers, req, Some(peer)).await
+    login_handler_inner(Arc::clone(&state), headers, req, Some(peer)).await
 }
 
+/// Windows/dev host builds use a stub; production devices build for Linux.
 #[cfg(not(unix))]
 pub async fn login_handler(
-    State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-    headers: HeaderMap,
-    Json(req): Json<LoginReq>,
+    State(_state): State<Arc<AppState>>,
+    Json(_req): Json<LoginReq>,
 ) -> Response {
-    login_handler_inner(state, jar, headers, req, None).await
+    Json(ApiResponse::<()>::err(
+        crate::api::error_codes::GENERIC,
+        "login is only available on the device (linux) target",
+    ))
+    .into_response()
 }
 
 async fn login_handler_inner(
     state: Arc<AppState>,
-    jar: CookieJar,
     headers: HeaderMap,
     req: LoginReq,
     peer: Option<SocketAddr>,
@@ -185,15 +216,12 @@ async fn login_handler_inner(
     );
 
     if state.config.authentication == "disable" {
-        return (
-            jar,
-            Json(ApiResponse::ok(LoginRsp {
-                token: "disabled".to_string(),
-                requires_password_change: false,
-                password_expiry_days: None,
-            })),
-        )
-            .into_response();
+        return Json(ApiResponse::ok(LoginRsp {
+            token: "disabled".to_string(),
+            requires_password_change: false,
+            password_expiry_days: None,
+        }))
+        .into_response();
     }
 
     // === Brute force check (P0 security parity, now via AppState) ===
@@ -271,11 +299,8 @@ async fn login_handler_inner(
         &EncodingKey::from_secret(signing_key.as_bytes()),
     ) {
         Ok(token) => {
-            let cookie = Cookie::build((COOKIE_NAME, token.clone()))
-                .path("/")
-                .http_only(false)
-                .same_site(SameSite::Lax)
-                .build();
+            let secure = state.config.proto.eq_ignore_ascii_case("https");
+            let cookie = build_session_cookie(&token, secure);
 
             log_audit_event(
                 "login",
@@ -286,15 +311,15 @@ async fn login_handler_inner(
             )
             .await;
 
-            (
-                jar.add(cookie),
+            attach_cookie(
                 Json(ApiResponse::ok(LoginRsp {
                     token,
                     requires_password_change: account.must_change_password,
                     password_expiry_days: None,
-                })),
+                }))
+                .into_response(),
+                cookie,
             )
-                .into_response()
         }
         Err(_) => Json(ApiResponse::<()>::err(
             crate::api::error_codes::GENERIC,
@@ -304,10 +329,7 @@ async fn login_handler_inner(
     }
 }
 
-pub async fn logout_handler(
-    State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-) -> impl IntoResponse {
+pub async fn logout_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if state.config.jwt.revoke_tokens_on_logout {
         let new_secret = crate::config::generate_jwt_secret_key();
         *state.jwt_secret.write() = new_secret.clone();
@@ -318,16 +340,12 @@ pub async fn logout_handler(
         }
     }
 
-    let cookie = Cookie::build((COOKIE_NAME, ""))
-        .path("/")
-        .max_age(Duration::ZERO.try_into().unwrap())
-        .same_site(SameSite::Lax)
-        .build();
-    (
-        jar.add(cookie),
-        Json(ApiResponse::<serde_json::Value>::ok_empty()),
+    let secure = state.config.proto.eq_ignore_ascii_case("https");
+    let cookie = clear_session_cookie(secure);
+    attach_cookie(
+        Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
+        cookie,
     )
-        .into_response()
 }
 
 #[cfg(target_os = "linux")]

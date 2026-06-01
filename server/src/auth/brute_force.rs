@@ -120,17 +120,18 @@ impl BruteForce {
     }
 
     /// Spawn cleanup task (call once after construction).
-    pub fn spawn_cleanup(self: Arc<Self>) {
-        if !self.is_enabled() {
+    pub fn spawn_cleanup(this: &Arc<Self>) {
+        if !this.is_enabled() {
             return;
         }
 
+        let this = Arc::clone(this);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
             loop {
                 interval.tick().await;
 
-                let mut map = self.attempts.write();
+                let mut map = this.attempts.write();
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()

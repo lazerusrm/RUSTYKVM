@@ -338,6 +338,11 @@ impl Config {
             fs::create_dir_all(parent).await?;
         }
         fs::write(CONFIG_FILE, content).await?;
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(CONFIG_FILE, std::fs::Permissions::from_mode(0o600)).await?;
+        }
         Ok(())
     }
 }

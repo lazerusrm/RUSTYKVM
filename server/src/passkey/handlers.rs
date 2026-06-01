@@ -1,8 +1,11 @@
 use axum::{
     extract::{Json, Query, State},
-    http::{header, StatusCode},
-    response::IntoResponse,
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
 };
+#[cfg(unix)]
+use axum::extract::ConnectInfo;
+use std::net::SocketAddr;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -11,8 +14,11 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tracing::{error, info, warn};
 
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
+
 use super::cbor::{read_bytes, read_int};
-use crate::auth::{get_account, log_audit_event};
+use crate::auth::{client_ip, get_account, log_audit_event};
 use crate::passkey::{
     crypto::AuthenticatorData,
     models::{
@@ -480,9 +486,13 @@ async fn load_passkeys() -> std::io::Result<crate::passkey::models::PasskeyStora
     {
         use std::os::unix::fs::PermissionsExt;
         if let Ok(metadata) = tokio::fs::metadata(PASSKEYS_FILE).await {
-            let perms = metadata.permissions().mode();
-            if perms & 0o777 != 0o600 {
-                warn!("Passkeys file has incorrect permissions: {:o}", perms);
+            let perms = metadata.permissions();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if perms.mode() & 0o777 != 0o600 {
+                    warn!("Passkeys file has incorrect permissions: {:o}", perms.mode());
+                }
             }
         }
     }
@@ -857,10 +867,31 @@ pub async fn login_verify_handler(
     }
 }
 
+#[cfg(unix)]
 pub async fn recover_handler(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<serde_json::Value>,
-) -> impl IntoResponse {
+) -> Response {
+    recover_handler_inner(state, headers, req, Some(peer)).await
+}
+
+#[cfg(not(unix))]
+pub async fn recover_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<serde_json::Value>,
+) -> Response {
+    recover_handler_inner(state, headers, req, None).await
+}
+
+async fn recover_handler_inner(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    req: serde_json::Value,
+    peer: Option<SocketAddr>,
+) -> axum::response::Response {
     let code = req
         .get("recovery_code")
         .and_then(|v| v.as_str())
@@ -872,10 +903,17 @@ pub async fn recover_handler(
             token: None,
             remaining_codes: None,
             error: Some("Recovery code required".to_string()),
-        });
+        })
+        .into_response();
     }
 
-    match validate_and_consume_code(code).await {
+    let ip = client_ip(
+        &headers,
+        peer,
+        state.config.security.trust_forwarded_headers,
+    );
+
+    match validate_and_consume_code(code, &ip).await {
         Ok((true, remaining)) => {
             info!("Recovery code validated, remaining: {}", remaining);
             let account = get_account().await;
@@ -901,6 +939,7 @@ pub async fn recover_handler(
                         remaining_codes: Some(remaining),
                         error: None,
                     })
+                    .into_response()
                 }
                 Err(e) => {
                     error!("Failed to generate JWT token: {}", e);
@@ -910,17 +949,18 @@ pub async fn recover_handler(
                         remaining_codes: None,
                         error: Some("Token generation failed".to_string()),
                     })
+                    .into_response()
                 }
             }
         }
         Ok((false, _)) => {
-            warn!("Invalid recovery code: {}", code);
+            warn!("Invalid recovery code");
             log_audit_event(
                 "RECOVERY_FAILED",
                 "unknown",
                 false,
                 "Invalid recovery code attempted",
-                None,
+                Some(ip),
             )
             .await;
             Json(RecoverResponse {
@@ -929,15 +969,17 @@ pub async fn recover_handler(
                 remaining_codes: None,
                 error: Some("Invalid recovery code".to_string()),
             })
+            .into_response()
         }
         Err(e) => {
-            error!("Recovery error: {}", e);
+            warn!("Recovery rate limited or failed: {}", e);
             Json(RecoverResponse {
                 success: false,
                 token: None,
                 remaining_codes: None,
-                error: Some("Recovery failed".to_string()),
+                error: Some(e),
             })
+            .into_response()
         }
     }
 }
