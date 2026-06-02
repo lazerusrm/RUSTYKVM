@@ -603,6 +603,7 @@ async fn main() {
     }
 
     let api_routes = api_routes
+        .route("/system/capabilities", get(capabilities_handler))
         .route("/webrtc/whep", post(whep_post_handler))
         .route(
             "/webrtc/whep/{id}",
@@ -617,7 +618,6 @@ async fn main() {
 
     let app = Router::new()
         .route("/health", get(health_check_handler))
-        .route("/api/system/capabilities", get(capabilities_handler))
         // Public auth routes (login + pre-login encryption key)
         .route("/api/login", post(login_handler))
         .route("/api/auth/login", post(login_handler))

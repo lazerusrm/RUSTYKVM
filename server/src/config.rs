@@ -284,16 +284,21 @@ pub fn generate_jwt_secret_key() -> String {
 
 // Migration helper: If new Security fields are at Go defaults (duration=0), copy from legacy PasswordPolicy lockout fields for backward compat.
 impl Config {
-    pub fn migrate_legacy_lockout(&mut self) {
+    /// Apply legacy PasswordPolicy lockout fields when Security lockout is unset (0 seconds).
+    pub fn migrate_legacy_lockout(&mut self) -> bool {
+        let mut changed = false;
         if self.security.login_lockout_duration == 0
             && self.password_policy.lockout_duration_minutes > 0
         {
             self.security.login_lockout_duration =
                 (self.password_policy.lockout_duration_minutes as i32) * 60;
+            changed = true;
         }
         if self.security.login_max_failures == 5 && self.password_policy.lockout_threshold > 0 {
             self.security.login_max_failures = self.password_policy.lockout_threshold as i32;
+            changed = true;
         }
+        changed
     }
 }
 
@@ -314,7 +319,16 @@ impl Config {
                 Ok(content) => match serde_yaml::from_str::<Config>(&content) {
                     Ok(mut config) => {
                         info!("Configuration loaded from {}", CONFIG_FILE);
-                        config.migrate_legacy_lockout();
+                        if config.migrate_legacy_lockout() {
+                            if let Err(e) = config.save().await {
+                                warn!("Failed to persist migrated lockout settings: {}", e);
+                            } else {
+                                info!(
+                                    "Persisted migrated login lockout settings to {}",
+                                    CONFIG_FILE
+                                );
+                            }
+                        }
                         return config;
                     }
                     Err(e) => {

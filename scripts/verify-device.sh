@@ -49,7 +49,7 @@ console.log(enc(process.argv[1], process.argv[2]));
 
 check_200 "$BASE_URL/health"
 check_200 "$BASE_URL/login.html"
-check_200 "$BASE_URL/api/system/capabilities"
+check_200 "$BASE_URL/api/passkey/status"
 
 if [ -n "${NANOKVM_USER:-}" ] && [ -n "${NANOKVM_PASS:-}" ]; then
   if ! command -v node >/dev/null 2>&1; then
