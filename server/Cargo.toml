@@ -11,6 +11,10 @@ categories = ["network-programming", "hardware-support"]
 [features]
 default = []
 
+# WebRTC screen/quality helpers are wired incrementally; deny unused items once parity lands.
+[lints.rust]
+dead_code = "allow"
+
 [dependencies]
 kvm = { path = "../kvm" }
 hid = { path = "../hid" }

@@ -511,7 +511,7 @@ fn allows_during_password_change(path: &str) -> bool {
         "/api/auth/logout",
         "/api/logout",
     ];
-    ALLOWED.iter().any(|allowed| path == *allowed)
+    ALLOWED.contains(&path)
 }
 
 pub async fn auth_middleware(

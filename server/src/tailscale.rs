@@ -159,11 +159,9 @@ pub async fn tailscale_status_handler() -> impl IntoResponse {
     let mut ipv4 = String::new();
     if let Some(ips) = self_node.and_then(|n| n.tailscale_ips.as_ref()) {
         for ip in ips {
-            if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
-                if let std::net::IpAddr::V4(v4) = addr {
-                    ipv4 = v4.to_string();
-                    break;
-                }
+            if let Ok(std::net::IpAddr::V4(v4)) = ip.parse::<std::net::IpAddr>() {
+                ipv4 = v4.to_string();
+                break;
             }
         }
     }
@@ -587,20 +585,18 @@ pub fn spawn_auto_update_task() {
         tokio::time::sleep(Duration::from_secs(60)).await;
 
         loop {
-            if AUTO_UPDATE_ENABLED.load(Ordering::SeqCst) {
-                if check_tailscale_installed().await {
-                    info!("Running Tailscale auto-update check...");
-                    match perform_tailscale_update().await {
-                        Ok(updated) => {
-                            if updated {
-                                info!("Tailscale was updated successfully");
-                            } else {
-                                info!("Tailscale is already up to date");
-                            }
+            if AUTO_UPDATE_ENABLED.load(Ordering::SeqCst) && check_tailscale_installed().await {
+                info!("Running Tailscale auto-update check...");
+                match perform_tailscale_update().await {
+                    Ok(updated) => {
+                        if updated {
+                            info!("Tailscale was updated successfully");
+                        } else {
+                            info!("Tailscale is already up to date");
                         }
-                        Err(e) => {
-                            error!("Tailscale auto-update failed: {}", e);
-                        }
+                    }
+                    Err(e) => {
+                        error!("Tailscale auto-update failed: {}", e);
                     }
                 }
             }

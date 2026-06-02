@@ -978,7 +978,7 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
                     // Track WebRTC broadcast success (all connections received)
                     let all_sent = sent == conn_ids.len();
                     success_for_adaptation &= all_sent;
-                    if fps > 0 && frame_counter % fps as u64 == 0 {
+                    if fps > 0 && frame_counter.is_multiple_of(fps as u64) {
                         debug!(
                             "H.264 broadcast: {} connections, {} packets, sent to {} peers",
                             conn_ids.len(),
@@ -1073,7 +1073,7 @@ async fn handle_h264_direct(mut socket: WebSocket, state: Arc<AppState>) {
         buf.put_u64_le(f.timestamp);
         buf.put_slice(&f.raw_data);
         if socket
-            .send(Message::Binary(buf.freeze().into()))
+            .send(Message::Binary(buf.freeze()))
             .await
             .is_err()
         {

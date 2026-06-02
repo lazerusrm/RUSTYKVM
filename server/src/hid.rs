@@ -486,58 +486,6 @@ fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
         m.insert('}', (0x40, 46));
         m.insert('@', (0x40, 39));
         m.insert('€', (0x40, 8));
-    } else if lang == "de" {
-        // German QWERTZ layout (matching Go implementation)
-        // Y/Z swap
-        m.insert('y', (0, 29));
-        m.insert('Y', (2, 29));
-        m.insert('z', (0, 28));
-        m.insert('Z', (2, 28));
-
-        // German umlauts and ß
-        m.insert('ä', (0, 52));
-        m.insert('Ä', (2, 52));
-        m.insert('ö', (0, 51));
-        m.insert('Ö', (2, 51));
-        m.insert('ü', (0, 47));
-        m.insert('Ü', (2, 47));
-        m.insert('ß', (0, 45));
-
-        // Special character remappings (German layout)
-        m.insert('^', (0, 53)); // must be double
-        m.insert('/', (2, 36)); // Shift + 7
-        m.insert('(', (2, 37)); // Shift + 8
-        m.insert('&', (2, 35)); // Shift + 6
-        m.insert(')', (2, 38)); // Shift + 9
-        m.insert('`', (2, 46)); // Grave Accent / Backtick
-        m.insert('"', (2, 31)); // Shift + 2
-        m.insert('?', (2, 45)); // Shift + ß
-        m.insert('{', (0x40, 36)); // AltGr + 7
-        m.insert('[', (0x40, 37)); // AltGr + 8
-        m.insert(']', (0x40, 38)); // AltGr + 6
-        m.insert('}', (0x40, 39)); // AltGr + 0
-        m.insert('\\', (0x40, 45)); // AltGr + ß
-        m.insert('@', (0x40, 20)); // AltGr + q
-        m.insert('+', (0, 48)); // Shift + +
-        m.insert('*', (2, 48)); // Shift + +
-        m.insert('~', (0x40, 48)); // Shift + +
-        m.insert('#', (0, 49)); // Shift + #
-        m.insert('\'', (2, 49)); // Shift + #
-        m.insert('<', (0, 100)); // Shift + <
-        m.insert('>', (2, 100)); // Shift + <
-        m.insert('|', (0x40, 100)); // AltGr + <
-        m.insert(';', (2, 54)); // Shift + ,
-        m.insert(':', (2, 55)); // Shift + .
-        m.insert('-', (0, 56)); // Shift + -
-        m.insert('_', (2, 56)); // Shift + -
-
-        // Additional German special characters
-        m.insert('´', (0, 46));
-        m.insert('°', (2, 53));
-        m.insert('§', (2, 32));
-        m.insert('€', (0x40, 8));
-        m.insert('²', (0x40, 31));
-        m.insert('³', (0x40, 32));
     }
 
     m

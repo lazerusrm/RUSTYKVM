@@ -60,7 +60,7 @@ pub fn validate_edid(data: &[u8]) -> Result<(), String> {
     }
 
     let header = [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
-    if &data[0..8] != header {
+    if data[0..8] != header {
         return Err("Invalid EDID header".to_string());
     }
 
@@ -111,7 +111,7 @@ pub async fn load_and_apply_custom_edid_on_boot() {
 async fn read_edid_via_i2c() -> Result<Vec<u8>, String> {
     #[cfg(target_os = "linux")]
     {
-        return edid_i2c::read_edid_from_hardware().await;
+        edid_i2c::read_edid_from_hardware().await
     }
     #[cfg(not(target_os = "linux"))]
     {

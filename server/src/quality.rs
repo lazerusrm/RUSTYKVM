@@ -166,36 +166,38 @@ impl QualityController {
             state.consecutive_failures = 0;
 
             // Try to increase quality after sustained success
-            if can_change && state.consecutive_successes >= INCREASE_THRESHOLD {
-                if state.current_tier > 0 {
-                    state.current_tier -= 1; // Lower index = higher quality
-                    state.consecutive_successes = 0;
-                    state.last_change = now;
-                    tracing::info!(
-                        "Quality increased to '{}' (tier {})",
-                        QUALITY_TIERS[state.current_tier].name,
-                        state.current_tier
-                    );
-                    return true;
-                }
+            if can_change
+                && state.consecutive_successes >= INCREASE_THRESHOLD
+                && state.current_tier > 0
+            {
+                state.current_tier -= 1; // Lower index = higher quality
+                state.consecutive_successes = 0;
+                state.last_change = now;
+                tracing::info!(
+                    "Quality increased to '{}' (tier {})",
+                    QUALITY_TIERS[state.current_tier].name,
+                    state.current_tier
+                );
+                return true;
             }
         } else {
             state.consecutive_failures += 1;
             state.consecutive_successes = 0;
 
             // Decrease quality quickly on failures
-            if can_change && state.consecutive_failures >= DECREASE_THRESHOLD {
-                if state.current_tier < QUALITY_TIERS.len() - 1 {
-                    state.current_tier += 1; // Higher index = lower quality
-                    state.consecutive_failures = 0;
-                    state.last_change = now;
-                    tracing::warn!(
-                        "Quality decreased to '{}' (tier {}) due to backpressure",
-                        QUALITY_TIERS[state.current_tier].name,
-                        state.current_tier
-                    );
-                    return true;
-                }
+            if can_change
+                && state.consecutive_failures >= DECREASE_THRESHOLD
+                && state.current_tier < QUALITY_TIERS.len() - 1
+            {
+                state.current_tier += 1; // Higher index = lower quality
+                state.consecutive_failures = 0;
+                state.last_change = now;
+                tracing::warn!(
+                    "Quality decreased to '{}' (tier {}) due to backpressure",
+                    QUALITY_TIERS[state.current_tier].name,
+                    state.current_tier
+                );
+                return true;
             }
         }
 
