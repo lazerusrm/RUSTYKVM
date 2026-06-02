@@ -373,7 +373,7 @@ impl NetworkManager {
 
     pub async fn read_saved_config() -> EthernetConfig {
         match fs::read_to_string(ETH_CONFIG_FILE).await {
-            Ok(yaml) => serde_yaml::from_str(&yaml).unwrap_or_else(|_| EthernetConfig {
+            Ok(yaml) => serde_yaml::from_str(&yaml).unwrap_or(EthernetConfig {
                 dhcp: true,
                 ip: None,
                 netmask: None,

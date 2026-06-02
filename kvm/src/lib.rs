@@ -347,10 +347,7 @@ impl Kvm {
     }
 
     pub fn get_mjpeg(&self, width: u16, height: u16, quality: u16) -> Result<KvmFrame, KvmError> {
-        // Ensure hardware is initialized before reading
-        if let Err(e) = self.ensure_initialized() {
-            return Err(e);
-        }
+        self.ensure_initialized()?;
 
         // Lock to prevent concurrent encoder access
         let _guard = KVM_LOCK.lock();
@@ -361,10 +358,7 @@ impl Kvm {
     }
 
     pub fn get_h264(&self, width: u16, height: u16, bitrate: u16) -> Result<KvmFrame, KvmError> {
-        // Ensure hardware is initialized before reading
-        if let Err(e) = self.ensure_initialized() {
-            return Err(e);
-        }
+        self.ensure_initialized()?;
 
         // Lock to prevent concurrent encoder access
         let _guard = KVM_LOCK.lock();
