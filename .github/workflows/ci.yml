@@ -1,220 +1,193 @@
-name: CI/CD Pipeline
+name: CI
 
 on:
   push:
     branches: [main]
-    tags:
-      - 'v*'
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Host toolchain checks must not use the default RISC-V target from .cargo/config.toml
+  HOST_TARGET: x86_64-unknown-linux-gnu
 
 jobs:
-  check:
-    name: Check & Lint
+  quality:
+    name: Quality (fmt, clippy, test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: host-${{ env.HOST_TARGET }}
+          save-if: true
 
-      - name: Check formatting
+      - name: Verify shell scripts use LF
+        run: |
+          if grep -r $'\r' scripts/S95nanokvm scripts/install.sh scripts/verify-device.sh; then
+            echo "ERROR: shell scripts must use LF line endings (see .gitattributes)"
+            exit 1
+          fi
+
+      - name: cargo fmt
         run: cargo fmt --all -- --check
 
-      - name: Run clippy
-        # Use native target to override .cargo/config.toml's riscv64 target
-        run: cargo clippy --workspace --target x86_64-unknown-linux-gnu -- -D warnings
-        continue-on-error: true
+      - name: cargo clippy (zero warnings)
+        run: cargo clippy --workspace --all-targets --target ${{ env.HOST_TARGET }} -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --target ${{ env.HOST_TARGET }}
+
+      - name: Verify release bundle inputs
+        run: |
+          test -x scripts/install.sh
+          test -f scripts/S95nanokvm
+          head -1 scripts/S95nanokvm | grep -q '^#!/bin/sh$'
 
   build-riscv:
     name: Build (RISC-V musl)
+    needs: quality
     runs-on: ubuntu-latest
-    needs: check
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: riscv64gc-unknown-linux-musl
 
-      - name: Download and install musl cross-compiler
-        run: |
-          # Download Sophgo/Sipeed's musl-based RISC-V toolchain
-          echo "Downloading musl toolchain..."
-          wget -q https://sophon-file.sophon.cn/sophon-prod-s3/drive/23/03/07/16/host-tools.tar.gz -O /tmp/host-tools.tar.gz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: riscv-musl
+          save-if: true
 
-          echo "Extracting toolchain..."
+      - name: Install musl cross-compiler
+        run: |
+          wget -q https://sophon-file.sophon.cn/sophon-prod-s3/drive/23/03/07/16/host-tools.tar.gz -O /tmp/host-tools.tar.gz
           sudo mkdir -p /opt/riscv-musl
           sudo tar -xzf /tmp/host-tools.tar.gz -C /opt/riscv-musl --strip-components=1
+          echo "/opt/riscv-musl/gcc/riscv64-linux-musl-x86_64/bin" >> "$GITHUB_PATH"
 
-          echo "Toolchain contents:"
-          ls -la /opt/riscv-musl/gcc/riscv64-linux-musl-x86_64/bin/ | head -20
-
-          # Add to PATH
-          echo "/opt/riscv-musl/gcc/riscv64-linux-musl-x86_64/bin" >> $GITHUB_PATH
-
-      - name: Verify toolchain
+      - name: Install lld linker wrapper
         run: |
-          export PATH="/opt/riscv-musl/gcc/riscv64-linux-musl-x86_64/bin:$PATH"
-          which riscv64-unknown-linux-musl-gcc
-          riscv64-unknown-linux-musl-gcc --version
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-riscv-musl-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Create linker wrapper script
-        run: |
-          # Create a wrapper that uses lld instead of GNU ld
-          # This avoids the ISA extension compatibility issues with old GCC binutils
-          cat > /tmp/riscv64-linux-musl-ld << 'WRAPPER'
+          cat > /tmp/riscv64-linux-musl-ld << 'EOF'
           #!/bin/bash
-          # Wrapper to use ld.lld instead of GNU ld for RISC-V linking
-          # Converts GNU ld args to lld-compatible args
           exec ld.lld "$@"
-          WRAPPER
+          EOF
           chmod +x /tmp/riscv64-linux-musl-ld
           sudo apt-get update
           sudo apt-get install -y lld
+          BINUTILS_DIR="/opt/riscv-musl/gcc/riscv64-linux-musl-x86_64/riscv64-unknown-linux-musl/bin"
+          MAIN_BIN="/opt/riscv-musl/gcc/riscv64-linux-musl-x86_64/bin"
+          for d in "$BINUTILS_DIR" "$MAIN_BIN"; do
+            if [ -f "$d/ld" ]; then
+              sudo mv "$d/ld" "$d/ld.bak"
+              sudo cp /tmp/riscv64-linux-musl-ld "$d/ld"
+            fi
+            if [ -f "$d/riscv64-unknown-linux-musl-ld" ]; then
+              sudo mv "$d/riscv64-unknown-linux-musl-ld" "$d/riscv64-unknown-linux-musl-ld.bak"
+              sudo cp /tmp/riscv64-linux-musl-ld "$d/riscv64-unknown-linux-musl-ld"
+            fi
+          done
 
-      - name: Build for RISC-V (musl)
+      - name: cargo build (release)
         env:
           CC_riscv64gc_unknown_linux_musl: riscv64-unknown-linux-musl-gcc
           CXX_riscv64gc_unknown_linux_musl: riscv64-unknown-linux-musl-g++
           CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER: riscv64-unknown-linux-musl-gcc
-          # Disable vector extension - C906 uses RVV 0.7, not RVV 1.0
           RUSTFLAGS: "-C target-feature=-v"
         run: |
           export PATH="/opt/riscv-musl/gcc/riscv64-linux-musl-x86_64/bin:$PATH"
+          cargo build -p nanokvm-server --release --target riscv64gc-unknown-linux-musl
 
-          # Replace the binutils ld with our lld wrapper
-          BINUTILS_DIR="/opt/riscv-musl/gcc/riscv64-linux-musl-x86_64/riscv64-unknown-linux-musl/bin"
-          if [ -f "$BINUTILS_DIR/ld" ]; then
-            sudo mv "$BINUTILS_DIR/ld" "$BINUTILS_DIR/ld.bak"
-            sudo cp /tmp/riscv64-linux-musl-ld "$BINUTILS_DIR/ld"
-          fi
-
-          # Also check the main bin directory
-          MAIN_BIN="/opt/riscv-musl/gcc/riscv64-linux-musl-x86_64/bin"
-          if [ -f "$MAIN_BIN/riscv64-unknown-linux-musl-ld" ]; then
-            sudo mv "$MAIN_BIN/riscv64-unknown-linux-musl-ld" "$MAIN_BIN/riscv64-unknown-linux-musl-ld.bak"
-            sudo cp /tmp/riscv64-linux-musl-ld "$MAIN_BIN/riscv64-unknown-linux-musl-ld"
-          fi
-
-          cargo build --workspace --release --target riscv64gc-unknown-linux-musl
-
-      - name: Verify binary
+      - name: Verify musl binary
         run: |
-          echo "Binary info:"
-          ls -la target/riscv64gc-unknown-linux-musl/release/nanokvm-server
           file target/riscv64gc-unknown-linux-musl/release/nanokvm-server
-          # Check it's musl-linked
-          readelf -d target/riscv64gc-unknown-linux-musl/release/nanokvm-server 2>/dev/null | head -20 || true
+          readelf -h target/riscv64gc-unknown-linux-musl/release/nanokvm-server | head -5
 
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: nanokvm-binary
+          name: nanokvm-server-riscv64-musl
           path: target/riscv64gc-unknown-linux-musl/release/nanokvm-server
           if-no-files-found: error
 
-  release:
-    name: Create Release
+  e2e-device:
+    name: E2E (device)
+    needs: quality
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install chromium --with-deps
+
+      - name: Run smoke tests
+        working-directory: e2e
+        env:
+          NANOKVM_BASE_URL: ${{ vars.NANOKVM_BASE_URL || 'http://192.168.0.84' }}
+          NANOKVM_USER: ${{ secrets.NANOKVM_USER || 'admin' }}
+          NANOKVM_PASS: ${{ secrets.NANOKVM_PASS || 'admin' }}
+        run: npm test
+
+  release:
+    name: Release
     needs: build-riscv
     if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download binary
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: nanokvm-binary
+          name: nanokvm-server-riscv64-musl
           path: binary/
 
-      - name: Create upgrade package
+      - name: Build upgrade tarball
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION="${GITHUB_REF_NAME}"
           mkdir -p package
           cp binary/nanokvm-server package/nanokvm-server
           chmod +x package/nanokvm-server
-          cp scripts/S95nanokvm package/S95nanokvm
-          cp scripts/install.sh package/install.sh
+          cp scripts/S95nanokvm package/
+          cp scripts/install.sh package/
           chmod +x package/install.sh
           echo "${VERSION}" > package/RELEASE_VERSION
-
-          cd package
-          tar -czvf ../nanokvm-rs-${VERSION}-upgrade.tar.gz .
-          cd ..
-          sha256sum nanokvm-rs-${VERSION}-upgrade.tar.gz > nanokvm-rs-${VERSION}-upgrade.tar.gz.sha256
-
-          # Create latest.json compatible with the in-device updater.
+          cd package && tar -czf "../nanokvm-rs-${VERSION}-upgrade.tar.gz" . && cd ..
           ASSET="nanokvm-rs-${VERSION}-upgrade.tar.gz"
-          SIZE="$(stat -c%s "${ASSET}")"
-          SHA512="$(openssl dgst -sha512 -binary "${ASSET}" | base64 -w0)"
-          cat > latest.json <<EOF
-          {"version":"${VERSION}","name":"${ASSET}","sha512":"${SHA512}","size":${SIZE}}
-          EOF
+          SIZE=$(stat -c%s "${ASSET}")
+          SHA512=$(openssl dgst -sha512 -binary "${ASSET}" | base64 -w0)
+          printf '{"version":"%s","name":"%s","sha512":"%s","size":%s}\n' \
+            "${VERSION}" "${ASSET}" "${SHA512}" "${SIZE}" > latest.json
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           files: |
             nanokvm-rs-*-upgrade.tar.gz
-            nanokvm-rs-*-upgrade.tar.gz.sha256
             latest.json
-          generate_release_notes: false
+          generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
-          body: |
-            ## NanoKVM-RS ${{ github.ref_name }}
-
-            High-performance Rust rewrite of the NanoKVM server.
-
-            ### Performance vs Go Version
-
-            | Metric | Go | Rust | Improvement |
-            |--------|-----|------|-------------|
-            | Input Latency | 30-80ms | 13-16ms | 3-4x faster |
-            | Video TTFB | ~50ms | 29-47ms | ~40% faster |
-            | RAM Usage | 24 MB | 14.5 MB | 40% less |
-
-            ### Installation
-
-            ```bash
-            # Upload to device
-            scp nanokvm-rs-${{ github.ref_name }}-upgrade.tar.gz root@<nanokvm-ip>:/tmp/
-
-            # Install
-            ssh root@<nanokvm-ip> "cd /tmp && tar -xzf nanokvm-rs-*-upgrade.tar.gz && ./install.sh"
-            ```
-
-            ### Key Features
-
-            - Lazy hardware initialization (no crash without HDMI)
-            - TCP_NODELAY for lower latency
-            - Reduced memory footprint
-            - H.264 hardware encoding via WebRTC

@@ -132,12 +132,12 @@ pub fn kvmv_read_img(
                     let size = if p_kvmv_data_size.is_null() {
                         0
                     } else {
-                        *p_kvmv_data_size
+                        std::ptr::read(p_kvmv_data_size)
                     };
                     let ptr_val = if pp_kvm_data.is_null() {
                         0
                     } else {
-                        *pp_kvm_data as usize
+                        std::ptr::read(pp_kvm_data) as usize
                     };
                     eprintln!(
                         "[kvm-sys] kvmv_read_img({}x{}, type={}, q={}) -> ret={}, size={}, ptr={:#x}",
