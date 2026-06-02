@@ -35,10 +35,15 @@ const PWD_FILE: &str = "/etc/kvm/pwd";
 const AUDIT_LOG_FILE: &str = "/var/log/nanokvm_auth.log";
 
 fn build_session_cookie(token: &str, secure: bool) -> Cookie<'static> {
+    let same_site = if secure {
+        SameSite::Strict
+    } else {
+        SameSite::Lax
+    };
     let mut builder = Cookie::build((COOKIE_NAME, token.to_string()))
         .path("/")
         .http_only(true)
-        .same_site(SameSite::Lax);
+        .same_site(same_site);
     if secure {
         builder = builder.secure(true);
     }
@@ -53,11 +58,16 @@ fn attach_cookie(mut response: Response, cookie: Cookie<'static>) -> Response {
 }
 
 fn clear_session_cookie(secure: bool) -> Cookie<'static> {
+    let same_site = if secure {
+        SameSite::Strict
+    } else {
+        SameSite::Lax
+    };
     let mut builder = Cookie::build((COOKIE_NAME, ""))
         .path("/")
         .max_age(Duration::ZERO.try_into().unwrap())
         .http_only(true)
-        .same_site(SameSite::Lax);
+        .same_site(same_site);
     if secure {
         builder = builder.secure(true);
     }

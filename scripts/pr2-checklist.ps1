@@ -65,9 +65,11 @@ for ($i = 1; $i -le 6; $i++) {
 }
 Assert $locked "brute-force lockout after repeated failures"
 
-# 5. Capabilities public
+# 5. Capabilities require auth; passkey status remains public for login UI
 $code = (curl.exe -s -o NUL -w "%{http_code}" "$BaseUrl/api/system/capabilities").Trim()
-Assert ($code -eq "200") "public /api/system/capabilities"
+Assert ($code -eq "401") "unauthenticated /api/system/capabilities -> 401"
+$code = (curl.exe -s -o NUL -w "%{http_code}" "$BaseUrl/api/passkey/status").Trim()
+Assert ($code -eq "200") "public /api/passkey/status"
 
 Remove-Item -Force $cookie.FullName, $cookie2.FullName -ErrorAction SilentlyContinue
 

@@ -31,7 +31,7 @@ function Encrypt-LoginPassword([string]$Password, [string]$SecretKey) {
 
 Assert-Http200 "$BaseUrl/health"
 Assert-Http200 "$BaseUrl/login.html"
-Assert-Http200 "$BaseUrl/api/system/capabilities"
+Assert-Http200 "$BaseUrl/api/passkey/status"
 
 if ($User -and $Pass) {
   $cookie = New-TemporaryFile
