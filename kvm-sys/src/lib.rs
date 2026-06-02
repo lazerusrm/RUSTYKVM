@@ -16,8 +16,9 @@ pub const IMG_H264_TYPE_PF: u8 = 4;
 
 // Library search paths for libkvm.so
 const LIB_PATHS: &[&str] = &[
-    "./dl_lib/libkvm.so",
+    "/kvmapp/dl_lib/libkvm.so",
     "/kvmapp/server/dl_lib/libkvm.so",
+    "./dl_lib/libkvm.so",
     "/tmp/server/dl_lib/libkvm.so",
     "libkvm.so",
 ];

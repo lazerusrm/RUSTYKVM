@@ -285,16 +285,18 @@ impl Kvm {
         Ok(true)
     }
 
-    /// Reset initialization state to allow retry.
-    /// Call this after HDMI is reconnected to re-attempt initialization.
+    /// Reset initialization state to allow retry (e.g. after HDMI reconnect).
     pub fn reset_init_state(&self) {
         let _guard = KVM_LOCK.lock();
         let state = InitState::from(KVM_STATE.load(Ordering::SeqCst));
-        if state == InitState::Failed {
-            info!("Resetting KVM init state for retry");
-            KVM_STATE.store(InitState::NotStarted as u8, Ordering::SeqCst);
-            self.init_failures.store(0, Ordering::SeqCst);
+        if state == InitState::Ready {
+            kvm_sys::free_all_kvmv_data();
+            kvm_sys::kvmv_deinit();
         }
+        info!("Resetting KVM init state for retry");
+        KVM_STATE.store(InitState::NotStarted as u8, Ordering::SeqCst);
+        ENCODER_MODE.store(EncoderMode::None as u8, Ordering::SeqCst);
+        self.init_failures.store(0, Ordering::SeqCst);
     }
 
     /// Deinitialize KVM hardware - should be called on shutdown

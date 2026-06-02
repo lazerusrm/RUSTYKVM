@@ -1259,12 +1259,12 @@ pub async fn reboot_handler() -> impl IntoResponse {
 
 #[cfg(target_os = "linux")]
 pub async fn reset_hdmi_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Full pipeline reset: release MMF/VI state before re-enabling HDMI.
+    state.kvm.reset_init_state();
+
     let _ = state.kvm.set_hdmi(false);
-
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
     let _ = state.kvm.set_hdmi(true);
-
     let _ = tokio::fs::remove_file(HDMI_DISABLE_FILE).await;
 
     Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()

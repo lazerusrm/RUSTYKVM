@@ -75,17 +75,21 @@ elif [ -n "${NANOKVM_RELEASE_VERSION:-}" ]; then
     echo "$NANOKVM_RELEASE_VERSION" > "$INSTALL_DIR/version"
 fi
 
-# Install proprietary libraries
-if [ -d "$SCRIPT_DIR/dl_lib" ]; then
-    log_info "Installing hardware libraries..."
-    mkdir -p "$INSTALL_DIR/dl_lib"
+# Install proprietary libraries (prefer release bundle dl_lib/, else platform tree)
+log_info "Installing hardware libraries..."
+mkdir -p "$INSTALL_DIR/dl_lib"
+if [ -d "$SCRIPT_DIR/dl_lib" ] && ls "$SCRIPT_DIR/dl_lib/"*.so >/dev/null 2>&1; then
     cp "$SCRIPT_DIR/dl_lib/"*.so "$INSTALL_DIR/dl_lib/"
-
-    # Add to library path
+elif [ -d "$INSTALL_DIR/server/dl_lib" ]; then
+    cp "$INSTALL_DIR/server/dl_lib/"*.so "$INSTALL_DIR/dl_lib/"
+fi
+if [ -f "$INSTALL_DIR/dl_lib/libkvm.so" ]; then
     if ! grep -q "/kvmapp/dl_lib" /etc/ld.so.conf.d/nanokvm.conf 2>/dev/null; then
         echo "/kvmapp/dl_lib" > /etc/ld.so.conf.d/nanokvm.conf
         ldconfig 2>/dev/null || true
     fi
+else
+    log_warn "libkvm.so not installed — video capture will not work until libraries are present"
 fi
 
 # Install web assets if present
