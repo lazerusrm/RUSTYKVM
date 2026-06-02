@@ -21,7 +21,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
+
 use tracing::{debug, warn};
 
 /// File location (consistent with other KVM runtime state: shortcuts, brute force, etc.)
@@ -122,26 +122,14 @@ impl MouseScrollStore {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         let tmp = format!("{}.tmp", MOUSE_SCROLL_FILE);
-
-        // Create with 0o600 (owner rw only)
-        let builder = {
-            let mut b = tokio::fs::OpenOptions::new();
-            b.create(true);
-            b.write(true);
-            b.truncate(true);
-            #[cfg(unix)]
-            {
-                std::os::unix::fs::OpenOptionsExt::mode(&mut b, 0o600);
-            }
-            b
-        };
-        let mut file = builder.open(&tmp).await?;
-
-        file.write_all(json.as_bytes()).await?;
-        file.write_all(b"\n").await?;
-        file.sync_all().await?;
-        drop(file);
-
+        let payload = format!("{json}\n");
+        fs::write(&tmp, payload).await?;
+        #[cfg(unix)]
+        {
+            use std::fs::Permissions;
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&tmp, Permissions::from_mode(0o600)).await?;
+        }
         fs::rename(&tmp, MOUSE_SCROLL_FILE).await
     }
 

@@ -9,8 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
-use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
+
 use tracing::{debug, warn};
 
 const STATE_FILE: &str = "/etc/kvm/brute_force_state.json";
@@ -79,29 +78,18 @@ impl BruteForce {
         match serde_json::to_string(&map) {
             Ok(json) => {
                 let tmp = format!("{}.tmp", STATE_FILE);
-                let mut builder = OpenOptions::new();
-                builder.create(true).write(true).truncate(true);
+                if let Err(e) = fs::write(&tmp, &json).await {
+                    warn!("Failed to write brute force state temp file: {}", e);
+                    return;
+                }
                 #[cfg(unix)]
                 {
-                    std::os::unix::fs::OpenOptionsExt::mode(&mut builder, 0o600);
+                    use std::fs::Permissions;
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&tmp, Permissions::from_mode(0o600)).await;
                 }
-                match builder.open(&tmp).await {
-                    Ok(mut file) => {
-                        if let Err(e) = file.write_all(json.as_bytes()).await {
-                            warn!("Failed to write brute force state temp file: {}", e);
-                            return;
-                        }
-                        if let Err(e) = file.sync_all().await {
-                            warn!("Failed to sync brute force state temp file: {}", e);
-                            return;
-                        }
-                        if let Err(e) = fs::rename(&tmp, STATE_FILE).await {
-                            warn!("Failed to commit brute force state file: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to open brute force state temp file: {}", e);
-                    }
+                if let Err(e) = fs::rename(&tmp, STATE_FILE).await {
+                    warn!("Failed to commit brute force state file: {}", e);
                 }
             }
             Err(e) => {

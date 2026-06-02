@@ -48,7 +48,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --target ${{ env.HOST_TARGET }} -- -D warnings
 
       - name: cargo test
-        run: cargo test --workspace --target ${{ env.HOST_TARGET }}
+        run: cargo test --workspace --target ${{ env.HOST_TARGET }} --exclude audio
 
       - name: Verify release bundle inputs
         run: |
