@@ -13,8 +13,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 // Check system capabilities
 async function checkCapabilities() {
     try {
-        const response = await fetch(`${API_BASE}/system/capabilities`);
-        capabilities = await response.json();
+        const response = await fetch(`${API_BASE}/passkey/status`);
+        const status = await response.json();
+        capabilities = {
+            ...status.capabilities,
+            passkey_configured: status.configured ?? status.capabilities?.passkey_configured,
+        };
         updateUI();
     } catch (error) {
         console.error('Failed to check capabilities:', error);

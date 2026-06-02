@@ -46,6 +46,7 @@ try {
 
   $remoteCmd =
     'set -e; ' +
+    'for pid in $(pidof nanokvm-server 2>/dev/null); do kill "$pid" 2>/dev/null || true; done; ' +
     'sleep 1; ' +
     'if [ -f /etc/init.d/S95nanokvm.new ]; then mv -f /etc/init.d/S95nanokvm.new /etc/init.d/S95nanokvm; chmod +x /etc/init.d/S95nanokvm; fi; ' +
     'TS=$(date +%s); ' +
