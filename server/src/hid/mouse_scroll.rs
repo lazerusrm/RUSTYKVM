@@ -24,9 +24,6 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
 
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
-
 /// File location (consistent with other KVM runtime state: shortcuts, brute force, etc.)
 const MOUSE_SCROLL_FILE: &str = "/etc/kvm/mouse_scroll.json";
 
@@ -135,7 +132,7 @@ impl MouseScrollStore {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::OpenOptionsExt;
-                b = b.mode(0o600);
+                b.mode(0o600);
             }
             b
         };

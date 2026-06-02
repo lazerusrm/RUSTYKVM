@@ -13,9 +13,6 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
 
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
-
 const STATE_FILE: &str = "/etc/kvm/brute_force_state.json";
 const MAX_RECORDS: usize = 3000;
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
@@ -244,6 +241,7 @@ mod tests {
         Security {
             login_lockout_duration: duration_secs,
             login_max_failures: max_failures,
+            trust_forwarded_headers: false,
         }
     }
 

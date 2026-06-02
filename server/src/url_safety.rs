@@ -1,6 +1,6 @@
 //! SSRF guards for server-initiated HTTP fetches.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use url::Url;
 
 pub async fn validate_remote_http_url(url_str: &str) -> Result<Url, String> {

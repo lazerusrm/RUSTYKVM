@@ -15,9 +15,6 @@ use subtle::ConstantTimeEq;
 use tokio::process::Command;
 use tracing::{error, info, warn};
 
-#[cfg(target_os = "linux")]
-use std::os::unix::fs::PermissionsExt;
-
 use super::cbor::{read_bytes, read_int};
 use crate::api::ApiResponse;
 use crate::auth::{client_ip, get_account, log_audit_event};
@@ -25,7 +22,7 @@ use crate::passkey::{
     crypto::AuthenticatorData,
     models::{
         CoseKey, LoginChallengeResponse, RecoverResponse, RecoveryCodesResponse, SetupResponse,
-        VerifyResponse, PASSKEYS_FILE, RECOVERY_CODES_FILE,
+        VerifyResponse, PASSKEYS_FILE,
     },
     qr::generate_qr_code_simple,
     recovery::{
