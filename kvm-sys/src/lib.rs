@@ -129,19 +129,14 @@ pub fn kvmv_read_img(
                     std::sync::atomic::AtomicU32::new(0);
                 let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if count < 10 || ret < 0 {
-                    let size = if p_kvmv_data_size.is_null() {
-                        0
-                    } else {
-                        std::ptr::read(p_kvmv_data_size)
-                    };
-                    let ptr_val = if pp_kvm_data.is_null() {
-                        0
-                    } else {
-                        std::ptr::read(pp_kvm_data) as usize
-                    };
                     eprintln!(
-                        "[kvm-sys] kvmv_read_img({}x{}, type={}, q={}) -> ret={}, size={}, ptr={:#x}",
-                        width, height, img_type, quality, ret, size, ptr_val
+                        "[kvm-sys] kvmv_read_img({}x{}, type={}, q={}) -> ret={}, outs_null={}",
+                        width,
+                        height,
+                        img_type,
+                        quality,
+                        ret,
+                        pp_kvm_data.is_null() || p_kvmv_data_size.is_null()
                     );
                 }
                 return ret;
