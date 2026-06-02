@@ -89,6 +89,9 @@ if ($RunE2E) {
   Push-Location $E2E
   try {
     npm test
+    if ($LASTEXITCODE -ne 0) {
+      throw "Playwright E2E failed with exit code $LASTEXITCODE"
+    }
   }
   finally {
     Pop-Location
