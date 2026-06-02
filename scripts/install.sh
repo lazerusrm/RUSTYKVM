@@ -1,6 +1,6 @@
 #!/bin/sh
-# NanoKVM-RS Installation Script
-# This script installs the Rust-based NanoKVM server on the device
+# RUSTYKVM on-device installation
+# Installs nanokvm-server, web assets, and the platform init script
 
 set -e
 
@@ -42,14 +42,14 @@ if [ ! -f "$SCRIPT_DIR/nanokvm-server" ]; then
     exit 1
 fi
 
-log_info "Starting NanoKVM-RS installation..."
+log_info "Starting RUSTYKVM installation..."
 
 # Create backup directory
 mkdir -p "$BACKUP_DIR"
 
 # Stop existing service if running
 if [ -f "/etc/init.d/$SERVICE_NAME" ]; then
-    log_info "Stopping existing NanoKVM service..."
+    log_info "Stopping existing RUSTYKVM service..."
     /etc/init.d/$SERVICE_NAME stop 2>/dev/null || true
 fi
 
@@ -68,6 +68,12 @@ mkdir -p "$CONFIG_DIR"
 log_info "Installing nanokvm-server binary..."
 cp "$SCRIPT_DIR/nanokvm-server" "$INSTALL_DIR/nanokvm-server"
 chmod +x "$INSTALL_DIR/nanokvm-server"
+
+if [ -f "$SCRIPT_DIR/RELEASE_VERSION" ]; then
+    cp "$SCRIPT_DIR/RELEASE_VERSION" "$INSTALL_DIR/version"
+elif [ -n "${NANOKVM_RELEASE_VERSION:-}" ]; then
+    echo "$NANOKVM_RELEASE_VERSION" > "$INSTALL_DIR/version"
+fi
 
 # Install proprietary libraries
 if [ -d "$SCRIPT_DIR/dl_lib" ]; then
@@ -93,7 +99,7 @@ fi
 if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
     log_info "Creating default configuration..."
     cat > "$CONFIG_DIR/config.yaml" << 'EOF'
-# NanoKVM-RS Configuration
+# RUSTYKVM configuration
 # This file is auto-generated on first run if not present
 
 http:
@@ -122,79 +128,13 @@ webrtc:
 EOF
 fi
 
-# Create init script
+# Install platform init script (single source: scripts/S95nanokvm in the release bundle)
 log_info "Installing init script..."
-cat > "/etc/init.d/$SERVICE_NAME" << 'EOF'
-#!/bin/sh
-### BEGIN INIT INFO
-# Provides:          nanokvm
-# Required-Start:    $network $remote_fs
-# Required-Stop:     $network $remote_fs
-# Default-Start:     2 3 4 5
-# Default-Stop:      0 1 6
-# Short-Description: NanoKVM Server
-# Description:       Rust-based NanoKVM server for remote KVM access
-### END INIT INFO
-
-DAEMON=/kvmapp/nanokvm-server
-DAEMON_ARGS=""
-PIDFILE=/var/run/nanokvm.pid
-LOGFILE=/var/log/nanokvm.log
-
-export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
-
-is_running() {
-    [ -f "$PIDFILE" ] || return 1
-    PID="$(cat "$PIDFILE" 2>/dev/null)"
-    [ -n "$PID" ] || return 1
-    kill -0 "$PID" 2>/dev/null
-}
-
-case "$1" in
-    start)
-        echo "Starting NanoKVM server..."
-        cd /kvmapp
-        start-stop-daemon -S -b -m -p $PIDFILE -a $DAEMON -- $DAEMON_ARGS >> $LOGFILE 2>&1
-        sleep 1
-        if ! is_running; then
-            echo "NanoKVM server failed to start. Last 60 log lines:" >&2
-            tail -n 60 "$LOGFILE" 2>/dev/null >&2 || true
-            exit 1
-        fi
-        echo "NanoKVM server started"
-        ;;
-    stop)
-        echo "Stopping NanoKVM server..."
-        start-stop-daemon -K -p $PIDFILE -s TERM
-        for i in 1 2 3 4 5 6 7 8 9 10; do
-            is_running || break
-            sleep 0.5
-        done
-        rm -f $PIDFILE
-        echo "NanoKVM server stopped"
-        ;;
-    restart)
-        $0 stop
-        sleep 1
-        $0 start
-        ;;
-    status)
-        if [ -f $PIDFILE ] && kill -0 $(cat $PIDFILE) 2>/dev/null; then
-            echo "NanoKVM server is running (PID: $(cat $PIDFILE))"
-        else
-            echo "NanoKVM server is not running"
-            exit 1
-        fi
-        ;;
-    *)
-        echo "Usage: $0 {start|stop|restart|status}"
-        exit 1
-        ;;
-esac
-
-exit 0
-EOF
-
+if [ ! -f "$SCRIPT_DIR/S95nanokvm" ]; then
+    log_error "S95nanokvm not found in $SCRIPT_DIR (include it in the release tarball)"
+    exit 1
+fi
+cp "$SCRIPT_DIR/S95nanokvm" "/etc/init.d/$SERVICE_NAME"
 chmod +x "/etc/init.d/$SERVICE_NAME"
 
 # Enable the service
@@ -211,7 +151,7 @@ if [ ! -f "$INSTALL_DIR/server.crt" ] || [ ! -f "$INSTALL_DIR/server.key" ]; the
     if command -v openssl >/dev/null 2>&1; then
         openssl req -x509 -newkey rsa:2048 -keyout "$INSTALL_DIR/server.key" \
             -out "$INSTALL_DIR/server.crt" -days 365 -nodes \
-            -subj "/CN=nanokvm/O=NanoKVM/C=US" 2>/dev/null
+            -subj "/CN=rustykvm/O=RUSTYKVM/C=US" 2>/dev/null
         log_info "TLS certificate generated"
     else
         log_warn "OpenSSL not found, skipping certificate generation"
@@ -220,12 +160,12 @@ if [ ! -f "$INSTALL_DIR/server.crt" ] || [ ! -f "$INSTALL_DIR/server.key" ]; the
 fi
 
 # Start the service
-log_info "Starting NanoKVM service..."
+log_info "Starting RUSTYKVM service..."
 /etc/init.d/$SERVICE_NAME start
 
 log_info "Installation complete!"
 log_info ""
-log_info "The NanoKVM server is now running."
+log_info "RUSTYKVM (nanokvm-server) is now running."
 log_info "Access it at: https://$(hostname -I | awk '{print $1}')"
 log_info ""
 log_info "Configuration file: $CONFIG_DIR/config.yaml"

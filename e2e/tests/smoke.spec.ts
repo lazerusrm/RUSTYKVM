@@ -28,7 +28,7 @@ test.describe('authenticated', () => {
 
   test('leader key endpoint exists', async ({ playwright }) => {
     const api = await playwright.request.newContext({ storageState: '.auth/state.json' });
-    const res = await api.get('/api/hid/shortcut/leader-key');
+    const res = await api.get('/api/hid/leader-key');
     expect(res.status()).toBe(200);
     const body = await res.json();
     expect(body.code).toBe(0);

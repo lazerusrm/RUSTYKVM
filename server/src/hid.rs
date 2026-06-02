@@ -2,12 +2,16 @@ use crate::api::ApiResponse;
 use crate::AppState;
 use axum::{
     extract::{Json, State},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use hid::{Shortcut, ShortcutKey};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
+
+// New sub-module for the mouse wheel direction/speed server profile (Iteration 6).
+pub mod mouse_scroll;
+pub use mouse_scroll::{get_mouse_scroll_handler, set_mouse_scroll_handler};
 
 #[derive(Debug, Deserialize)]
 pub struct PasteReq {
@@ -63,7 +67,7 @@ pub async fn paste_handler(
 ) -> impl IntoResponse {
     if req.content.len() > 1024 {
         return Json(ApiResponse::<serde_json::Value>::err(
-            -1,
+            crate::api::error_codes::VALIDATION,
             "content too long",
         ))
         .into_response();
@@ -111,7 +115,11 @@ pub async fn delete_shortcut_handler(Json(req): Json<DeleteShortcutReq>) -> impl
         let _ = save_shortcuts(&shortcuts).await;
         Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
     } else {
-        Json(ApiResponse::<serde_json::Value>::err(-1, "not found")).into_response()
+        Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::NOT_FOUND,
+            "not found",
+        ))
+        .into_response()
     }
 }
 
@@ -161,7 +169,11 @@ pub async fn set_hid_mode_handler(Json(req): Json<SetHidModeReq>) -> impl IntoRe
         });
         Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
     } else {
-        Json(ApiResponse::<serde_json::Value>::err(-1, "failed")).into_response()
+        Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            "failed",
+        ))
+        .into_response()
     }
 }
 
@@ -173,7 +185,7 @@ pub async fn reset_hid_handler() -> impl IntoResponse {
     Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
 }
 
-pub async fn set_leader_key_handler(Json(req): Json<SetLeaderKeyReq>) -> impl IntoResponse {
+pub async fn set_leader_key_handler(Json(req): Json<SetLeaderKeyReq>) -> Response {
     let key = req.key.trim().to_string();
     if key.is_empty() {
         match tokio::fs::remove_file(LEADER_KEY_FILE).await {
@@ -199,7 +211,7 @@ pub async fn set_leader_key_handler(Json(req): Json<SetLeaderKeyReq>) -> impl In
     }
 }
 
-pub async fn get_leader_key_handler() -> impl IntoResponse {
+pub async fn get_leader_key_handler() -> Response {
     match tokio::fs::read_to_string(LEADER_KEY_FILE).await {
         Ok(s) => Json(ApiResponse::ok(GetLeaderKeyRsp {
             key: s.trim().to_string(),
@@ -249,6 +261,9 @@ async fn save_shortcuts(shortcuts: &[Shortcut]) -> anyhow::Result<()> {
     tokio::fs::write(SHORTCUT_FILE, json).await?;
     Ok(())
 }
+
+// Mouse wheel direction/speed full support (including HID report changes) is documented
+// in IMPLEMENTATION_PLAN.md. No partial/stub implementations will be shipped.
 
 fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
     let mut m = std::collections::HashMap::new();
@@ -403,7 +418,7 @@ fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
         m.insert('²', (0x40, 31));
         m.insert('³', (0x40, 32));
     } else if lang == "fr" {
-        // AZERTY Swaps
+        // French AZERTY (matching Go implementation)
         m.insert('a', (0, 20));
         m.insert('A', (2, 20));
         m.insert('q', (0, 4));
@@ -415,7 +430,7 @@ fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
         m.insert('m', (0, 51));
         m.insert('M', (2, 51));
 
-        // Digits (require shift on French AZERTY)
+        // Numbers require Shift on AZERTY
         m.insert('1', (2, 30));
         m.insert('2', (2, 31));
         m.insert('3', (2, 32));
@@ -427,22 +442,102 @@ fn get_char_map(lang: &str) -> std::collections::HashMap<char, (u8, u8)> {
         m.insert('9', (2, 38));
         m.insert('0', (2, 39));
 
-        // Accents
-        m.insert('é', (0, 31));
-        m.insert('è', (0, 36));
-        m.insert('ç', (0, 38));
-        m.insert('à', (0, 39));
-        m.insert('ù', (0, 52));
-
-        // Symbols
+        // Unshifted number row
         m.insert('&', (0, 30));
         m.insert('é', (0, 31));
         m.insert('"', (0, 32));
         m.insert('\'', (0, 33));
         m.insert('(', (0, 34));
         m.insert('-', (0, 35));
+        m.insert('è', (0, 36));
         m.insert('_', (0, 37));
-        m.insert(')', (0, 40));
+        m.insert('ç', (0, 38));
+        m.insert('à', (0, 39));
+
+        // Other French characters
+        m.insert(')', (0, 45));
+        m.insert('°', (2, 45));
+        m.insert('^', (0, 47));
+        m.insert('¨', (2, 47));
+        m.insert('$', (0, 48));
+        m.insert('£', (2, 48));
+        m.insert('*', (0, 49));
+        m.insert('µ', (2, 49));
+        m.insert('ù', (0, 52));
+        m.insert('%', (2, 52));
+        m.insert(',', (0, 16));
+        m.insert('?', (2, 16));
+        m.insert(';', (0, 54));
+        m.insert('.', (2, 54));
+        m.insert(':', (0, 55));
+        m.insert('/', (2, 55));
+        m.insert('!', (0, 56));
+        m.insert('§', (2, 56));
+
+        // AltGr combinations
+        m.insert('~', (0x40, 31));
+        m.insert('#', (0x40, 32));
+        m.insert('{', (0x40, 33));
+        m.insert('[', (0x40, 34));
+        m.insert('|', (0x40, 35));
+        m.insert('`', (0x40, 36));
+        m.insert('\\', (0x40, 37));
+        m.insert(']', (0x40, 45));
+        m.insert('}', (0x40, 46));
+        m.insert('@', (0x40, 39));
+        m.insert('€', (0x40, 8));
+    } else if lang == "de" {
+        // German QWERTZ layout (matching Go implementation)
+        // Y/Z swap
+        m.insert('y', (0, 29));
+        m.insert('Y', (2, 29));
+        m.insert('z', (0, 28));
+        m.insert('Z', (2, 28));
+
+        // German umlauts and ß
+        m.insert('ä', (0, 52));
+        m.insert('Ä', (2, 52));
+        m.insert('ö', (0, 51));
+        m.insert('Ö', (2, 51));
+        m.insert('ü', (0, 47));
+        m.insert('Ü', (2, 47));
+        m.insert('ß', (0, 45));
+
+        // Special character remappings (German layout)
+        m.insert('^', (0, 53)); // must be double
+        m.insert('/', (2, 36)); // Shift + 7
+        m.insert('(', (2, 37)); // Shift + 8
+        m.insert('&', (2, 35)); // Shift + 6
+        m.insert(')', (2, 38)); // Shift + 9
+        m.insert('`', (2, 46)); // Grave Accent / Backtick
+        m.insert('"', (2, 31)); // Shift + 2
+        m.insert('?', (2, 45)); // Shift + ß
+        m.insert('{', (0x40, 36)); // AltGr + 7
+        m.insert('[', (0x40, 37)); // AltGr + 8
+        m.insert(']', (0x40, 38)); // AltGr + 6
+        m.insert('}', (0x40, 39)); // AltGr + 0
+        m.insert('\\', (0x40, 45)); // AltGr + ß
+        m.insert('@', (0x40, 20)); // AltGr + q
+        m.insert('+', (0, 48)); // Shift + +
+        m.insert('*', (2, 48)); // Shift + +
+        m.insert('~', (0x40, 48)); // Shift + +
+        m.insert('#', (0, 49)); // Shift + #
+        m.insert('\'', (2, 49)); // Shift + #
+        m.insert('<', (0, 100)); // Shift + <
+        m.insert('>', (2, 100)); // Shift + <
+        m.insert('|', (0x40, 100)); // AltGr + <
+        m.insert(';', (2, 54)); // Shift + ,
+        m.insert(':', (2, 55)); // Shift + .
+        m.insert('-', (0, 56)); // Shift + -
+        m.insert('_', (2, 56)); // Shift + -
+
+        // Additional German special characters
+        m.insert('´', (0, 46));
+        m.insert('°', (2, 53));
+        m.insert('§', (2, 32));
+        m.insert('€', (0x40, 8));
+        m.insert('²', (0x40, 31));
+        m.insert('³', (0x40, 32));
     }
 
     m

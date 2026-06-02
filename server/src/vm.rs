@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::api::ApiResponse;
+use crate::api::{error_codes, ApiResponse};
 use crate::AppState;
 use axum::{
     extract::{
@@ -9,12 +9,22 @@ use axum::{
     },
     response::IntoResponse,
 };
-#[cfg(target_os = "linux")]
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tracing::{error, info, warn};
+
+pub mod edid;
+
+#[cfg(target_os = "linux")]
+pub mod serial;
+
+pub use edid::{apply_default_edid_handler, get_edid_handler, set_edid_handler};
+#[cfg(target_os = "linux")]
+pub use serial::{get_serial_ports_handler, serial_ws_handler};
 
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
@@ -129,11 +139,15 @@ pub struct DeleteScriptReq {
 pub struct GetVirtualDeviceRsp {
     pub network: bool,
     pub disk: bool,
+    /// Current inquiry string for the virtual disk (if enabled)
+    pub disk_inquiry: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateVirtualDeviceReq {
     pub device: String,
+    /// Optional custom inquiry string when enabling disk
+    pub inquiry: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -198,6 +212,7 @@ const GOMEMLIMIT_FILE: &str = "/etc/kvm/GOMEMLIMIT";
 
 const VIRTUAL_NETWORK: &str = "/boot/usb.rndis0";
 const VIRTUAL_DISK: &str = "/boot/usb.disk0";
+const DISK_INQUIRY_FILE: &str = "/etc/kvm/virtual_disk_inquiry";
 
 const AVAHI_PID_FILE: &str = "/run/avahi-daemon/pid";
 const AVAHI_SCRIPT: &str = "/etc/init.d/S50avahi-daemon";
@@ -437,14 +452,22 @@ pub async fn set_tls_handler(
             });
             Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
         }
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            &e.to_string(),
+        ))
+        .into_response(),
     }
 }
 
 pub async fn set_oled_handler(Json(req): Json<SetOledReq>) -> impl IntoResponse {
     match tokio::fs::write(OLED_SLEEP_FILE, req.sleep.to_string()).await {
         Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            &e.to_string(),
+        ))
+        .into_response(),
     }
 }
 
@@ -606,7 +629,11 @@ pub async fn set_jiggler_handler(
 
     match res {
         Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            &e.to_string(),
+        ))
+        .into_response(),
     }
 }
 
@@ -805,9 +832,11 @@ pub async fn run_script_handler(Json(req): Json<RunScriptReq>) -> impl IntoRespo
                     + &String::from_utf8_lossy(&output.stderr);
                 Json(ApiResponse::ok(RunScriptRsp { log })).into_response()
             }
-            Err(e) => {
-                Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response()
-            }
+            Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+                crate::api::error_codes::GENERIC,
+                &e.to_string(),
+            ))
+            .into_response(),
         }
     } else {
         let mut cmd = if req.name.to_lowercase().ends_with(".py") {
@@ -836,21 +865,39 @@ pub async fn delete_script_handler(Json(req): Json<DeleteScriptReq>) -> impl Int
     };
     match tokio::fs::remove_file(path).await {
         Ok(_) => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            &e.to_string(),
+        ))
+        .into_response(),
     }
 }
 
 pub async fn get_virtual_device_handler() -> impl IntoResponse {
     let network = std::path::Path::new(VIRTUAL_NETWORK).exists();
     let disk = std::path::Path::new(VIRTUAL_DISK).exists();
-    Json(ApiResponse::ok(GetVirtualDeviceRsp { network, disk }))
+
+    let disk_inquiry = if disk {
+        tokio::fs::read_to_string(DISK_INQUIRY_FILE)
+            .await
+            .ok()
+            .map(|s| s.trim().to_string())
+    } else {
+        None
+    };
+
+    Json(ApiResponse::ok(GetVirtualDeviceRsp {
+        network,
+        disk,
+        disk_inquiry,
+    }))
 }
 
 pub async fn update_virtual_device_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpdateVirtualDeviceReq>,
 ) -> impl IntoResponse {
-    let (device_path, mount_cmds, unmount_commands) = match req.device.as_str() {
+    let (device_path, mount_cmds, unmount_commands, inquiry_path) = match req.device.as_str() {
         "network" => (
             VIRTUAL_NETWORK,
             vec![
@@ -864,6 +911,7 @@ pub async fn update_virtual_device_handler(
                 "rm /boot/usb.rndis0",
                 "/etc/init.d/S03usbdev start",
             ],
+            None,
         ),
         "disk" => (
             VIRTUAL_DISK,
@@ -878,27 +926,50 @@ pub async fn update_virtual_device_handler(
                 "rm /boot/usb.disk0",
                 "/etc/init.d/S03usbdev start",
             ],
+            Some("/sys/kernel/config/usb_gadget/g0/functions/mass_storage.disk0/lun.0/inquiry_string"),
         ),
         _ => {
             return Json(ApiResponse::<serde_json::Value>::err(
-                -1,
+                crate::api::error_codes::VALIDATION,
                 "invalid arguments",
             ))
             .into_response()
         }
     };
+
     let exists = std::path::Path::new(device_path).exists();
     let cmds = if !exists {
         mount_cmds
     } else {
         unmount_commands
     };
+
     {
         let _hid = state.hid.lock().await;
         for cmd in cmds {
             let _ = Command::new("sh").arg("-c").arg(cmd).status().await;
         }
     }
+
+    // Handle inquiry string for disk (apply on enable or update)
+    if req.device == "disk" {
+        if let Some(inquiry) = &req.inquiry {
+            // Always persist latest inquiry string for disk
+            if let Err(e) = tokio::fs::write(DISK_INQUIRY_FILE, inquiry).await {
+                warn!("Failed to persist disk inquiry string: {}", e);
+            }
+
+            if !exists {
+                // Apply after gadget comes up
+                tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+            }
+
+            if let Some(sys_path) = inquiry_path {
+                let _ = tokio::fs::write(sys_path, inquiry).await;
+            }
+        }
+    }
+
     let on = std::path::Path::new(device_path).exists();
     Json(ApiResponse::ok(UpdateVirtualDeviceRsp { on })).into_response()
 }
@@ -915,7 +986,11 @@ pub async fn enable_mdns_handler() -> impl IntoResponse {
     );
     match Command::new("sh").arg("-c").arg(cmd).status().await {
         Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        _ => Json(ApiResponse::<serde_json::Value>::err(-1, "failed")).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            "failed",
+        ))
+        .into_response(),
     }
 }
 
@@ -931,7 +1006,11 @@ pub async fn disable_mdns_handler() -> impl IntoResponse {
             Ok(s) if s.success() => {
                 Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
             }
-            _ => Json(ApiResponse::<serde_json::Value>::err(-1, "failed")).into_response(),
+            _ => Json(ApiResponse::<serde_json::Value>::err(
+                crate::api::error_codes::GENERIC,
+                "failed",
+            ))
+            .into_response(),
         }
     } else {
         Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response()
@@ -951,7 +1030,11 @@ pub async fn enable_ssh_handler() -> impl IntoResponse {
         .await
     {
         Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        _ => Json(ApiResponse::<serde_json::Value>::err(-1, "failed")).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            "failed",
+        ))
+        .into_response(),
     }
 }
 
@@ -963,7 +1046,11 @@ pub async fn disable_ssh_handler() -> impl IntoResponse {
         .await
     {
         Ok(s) if s.success() => Json(ApiResponse::<serde_json::Value>::ok_empty()).into_response(),
-        _ => Json(ApiResponse::<serde_json::Value>::err(-1, "failed")).into_response(),
+        _ => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            "failed",
+        ))
+        .into_response(),
     }
 }
 
@@ -1113,7 +1200,11 @@ pub async fn get_autostart_content_handler(Path(name): Path<String>) -> impl Int
     let path = std::path::Path::new(AUTOSTART_DIRECTORY).join(name);
     match tokio::fs::read_to_string(path).await {
         Ok(c) => Json(ApiResponse::ok(c)).into_response(),
-        Err(_) => Json(ApiResponse::<String>::err(-1, "read file fail")).into_response(),
+        Err(_) => Json(ApiResponse::<String>::err(
+            error_codes::GENERIC,
+            "failed to read autostart file",
+        ))
+        .into_response(),
     }
 }
 
@@ -1135,7 +1226,11 @@ pub async fn upload_autostart_handler(
             ))
             .into_response()
         }
-        Err(e) => Json(ApiResponse::<serde_json::Value>::err(-1, &e.to_string())).into_response(),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::err(
+            crate::api::error_codes::GENERIC,
+            &e.to_string(),
+        ))
+        .into_response(),
     }
 }
 

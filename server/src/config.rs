@@ -46,6 +46,8 @@ pub struct Config {
     pub turn: Turn,
     #[serde(default)]
     pub password_policy: PasswordPolicy,
+    #[serde(default)]
+    pub security: Security,
 }
 
 fn default_proto() -> String {
@@ -250,6 +252,59 @@ impl Default for PasswordPolicy {
     }
 }
 
+// Security config for parity with official Go version (server/config/types.go)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Security {
+    #[serde(
+        rename = "loginLockoutDuration",
+        default = "default_lockout_duration_sec"
+    )]
+    pub login_lockout_duration: i32, // seconds, 0 = disabled (matches Go)
+    #[serde(rename = "loginMaxFailures", default = "default_max_failures")]
+    pub login_max_failures: i32,
+    /// When true, honor X-Forwarded-For / X-Real-IP (only safe behind a trusted reverse proxy).
+    #[serde(rename = "trustForwardedHeaders", default)]
+    pub trust_forwarded_headers: bool,
+}
+
+impl Default for Security {
+    fn default() -> Self {
+        Self {
+            login_lockout_duration: 0, // disabled by default for safety, like Go
+            login_max_failures: 5,
+            trust_forwarded_headers: false,
+        }
+    }
+}
+
+/// Generate a new JWT signing secret (matches Go config.generateRandomSecretKey).
+pub fn generate_jwt_secret_key() -> String {
+    generate_random_secret()
+}
+
+// Migration helper: If new Security fields are at Go defaults (duration=0), copy from legacy PasswordPolicy lockout fields for backward compat.
+impl Config {
+    pub fn migrate_legacy_lockout(&mut self) {
+        if self.security.login_lockout_duration == 0
+            && self.password_policy.lockout_duration_minutes > 0
+        {
+            self.security.login_lockout_duration =
+                (self.password_policy.lockout_duration_minutes as i32) * 60;
+        }
+        if self.security.login_max_failures == 5 && self.password_policy.lockout_threshold > 0 {
+            self.security.login_max_failures = self.password_policy.lockout_threshold as i32;
+        }
+    }
+}
+
+fn default_lockout_duration_sec() -> i32 {
+    0
+}
+
+fn default_max_failures() -> i32 {
+    5
+}
+
 impl Config {
     pub async fn load() -> Self {
         let path = Path::new(CONFIG_FILE);
@@ -257,8 +312,9 @@ impl Config {
         if path.exists() {
             match fs::read_to_string(path).await {
                 Ok(content) => match serde_yaml::from_str::<Config>(&content) {
-                    Ok(config) => {
+                    Ok(mut config) => {
                         info!("Configuration loaded from {}", CONFIG_FILE);
+                        config.migrate_legacy_lockout();
                         return config;
                     }
                     Err(e) => {
@@ -282,6 +338,11 @@ impl Config {
             fs::create_dir_all(parent).await?;
         }
         fs::write(CONFIG_FILE, content).await?;
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(CONFIG_FILE, std::fs::Permissions::from_mode(0o600)).await?;
+        }
         Ok(())
     }
 }
@@ -298,6 +359,7 @@ impl Default for Config {
             stun: DEFAULT_STUN.to_string(),
             turn: Turn::default(),
             password_policy: PasswordPolicy::default(),
+            security: Security::default(),
         }
     }
 }

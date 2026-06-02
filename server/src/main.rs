@@ -10,6 +10,7 @@ mod quality;
 mod storage;
 mod storage_health;
 mod tailscale;
+mod url_safety;
 mod utils;
 mod vm;
 mod webrtc;
@@ -52,22 +53,25 @@ use crate::webrtc::screen::{stop_frame_detect_handler, update_frame_detect_handl
 
 #[cfg(target_os = "linux")]
 use crate::vm::{
-    delete_autostart_handler, delete_script_handler, disable_hdmi_handler, disable_mdns_handler,
-    disable_ssh_handler, enable_hdmi_handler, enable_mdns_handler, enable_ssh_handler,
-    get_autostart_content_handler, get_autostart_handler, get_gpio_handler, get_hardware_handler,
-    get_hdmi_state_handler, get_hostname_handler, get_info_handler, get_jiggler_handler,
-    get_mdns_handler, get_memory_limit_handler, get_oled_handler, get_scripts_handler,
+    apply_default_edid_handler, delete_autostart_handler, delete_script_handler,
+    disable_hdmi_handler, disable_mdns_handler, disable_ssh_handler, enable_hdmi_handler,
+    enable_mdns_handler, enable_ssh_handler, get_autostart_content_handler, get_autostart_handler,
+    get_edid_handler, get_gpio_handler, get_hardware_handler, get_hdmi_state_handler,
+    get_hostname_handler, get_info_handler, get_jiggler_handler, get_mdns_handler,
+    get_memory_limit_handler, get_oled_handler, get_scripts_handler, get_serial_ports_handler,
     get_ssh_handler, get_swap_handler, get_virtual_device_handler, get_web_title_handler,
-    reboot_handler, reset_hdmi_handler, run_script_handler, set_gpio_handler, set_hostname_handler,
-    set_jiggler_handler, set_memory_limit_handler, set_oled_handler, set_screen_handler,
-    set_swap_handler, set_tls_handler, set_web_title_handler, terminal_handler,
-    update_virtual_device_handler, upload_autostart_handler, upload_script_handler,
+    reboot_handler, reset_hdmi_handler, run_script_handler, serial_ws_handler, set_edid_handler,
+    set_gpio_handler, set_hostname_handler, set_jiggler_handler, set_memory_limit_handler,
+    set_oled_handler, set_screen_handler, set_swap_handler, set_tls_handler, set_web_title_handler,
+    terminal_handler, update_virtual_device_handler, upload_autostart_handler,
+    upload_script_handler,
 };
 
 use crate::application::{
     get_preview_handler, get_version_handler, offline_update_handler, set_preview_handler,
     update_handler,
 };
+use crate::auth::brute_force::BruteForce;
 use crate::auth::{
     auth_middleware, change_password_handler, get_account_handler, get_encryption_key_handler,
     is_password_updated_handler, login_handler, logout_handler,
@@ -75,8 +79,8 @@ use crate::auth::{
 use crate::config::Config;
 use crate::hid::{
     add_shortcut_handler, delete_shortcut_handler, get_hid_mode_handler, get_leader_key_handler,
-    get_shortcuts_handler, paste_handler, reset_hid_handler, set_hid_mode_handler,
-    set_leader_key_handler,
+    get_mouse_scroll_handler, get_shortcuts_handler, paste_handler, reset_hid_handler,
+    set_hid_mode_handler, set_leader_key_handler, set_mouse_scroll_handler,
 };
 use crate::network::{
     connect_wifi_handler, connect_wifi_no_auth_handler, delete_wol_mac_handler,
@@ -88,7 +92,7 @@ use crate::network::{
 use crate::network::{get_ethernet_config_handler, set_ethernet_config_handler};
 use crate::passkey::handlers::{
     enroll_complete_handler, login_challenge_handler, login_verify_handler, passkey_setup_handler,
-    passkey_status_handler, qr_code_handler, recover_handler, recovery_download_handler,
+    passkey_status_handler, qr_code_handler, recover_handler, setup_recovery_codes_handler,
 };
 use crate::storage::{
     delete_image_handler, get_cdrom_handler, get_images_handler, get_mounted_image_handler,
@@ -158,12 +162,19 @@ pub struct AppState {
     kvm: Arc<::kvm::Kvm>,
     health_state: Arc<HealthState>,
     passkey_state: Arc<crate::passkey::PasskeyState>,
+    brute_force: Arc<BruteForce>,
+    /// Live JWT signing secret (rotated on logout when configured).
+    jwt_secret: Arc<parking_lot::RwLock<String>>,
+    // Server-managed mouse wheel direction + speed profile (optional enhancement,
+    // wire protocol itself was already at Go parity). See hid/mouse_scroll.rs.
+    mouse_scroll: Arc<crate::hid::mouse_scroll::MouseScrollStore>,
 }
 
 #[cfg(not(target_os = "linux"))]
 #[allow(dead_code)] // Fields for future audio streaming support
 pub struct AppState {
     config: Arc<Config>,
+    jwt_secret: Arc<parking_lot::RwLock<String>>,
     screen_config: crate::webrtc::screen::SharedScreenConfig,
     quality_controller: SharedQualityController,
     tx_mjpeg: broadcast::Sender<Bytes>,
@@ -175,6 +186,10 @@ pub struct AppState {
     jiggler: Arc<::vm::jiggler::MouseJiggler>,
     health_state: Arc<HealthState>,
     passkey_state: Arc<crate::passkey::PasskeyState>,
+    brute_force: Arc<BruteForce>,
+    // Server-managed mouse wheel direction + speed profile (optional enhancement,
+    // wire protocol itself was already at Go parity). See hid/mouse_scroll.rs.
+    mouse_scroll: Arc<crate::hid::mouse_scroll::MouseScrollStore>,
 }
 
 #[tokio::main]
@@ -274,11 +289,22 @@ async fn main() {
         kvm: kvm_handle.clone(),
         health_state: Arc::new(HealthState::default()),
         passkey_state: passkey_state.clone(),
+        brute_force: {
+            let bf = Arc::new(BruteForce::new(config.security.clone()));
+            if let Err(e) = bf.load_state().await {
+                warn!("Failed to load brute force state: {}", e);
+            }
+            BruteForce::spawn_cleanup(&bf);
+            bf
+        },
+        jwt_secret: Arc::new(parking_lot::RwLock::new(config.jwt.secret_key.clone())),
+        mouse_scroll: crate::hid::mouse_scroll::MouseScrollStore::new(),
     });
 
     #[cfg(not(target_os = "linux"))]
     let shared_state = Arc::new(AppState {
         config: config.clone(),
+        jwt_secret: Arc::new(parking_lot::RwLock::new(config.jwt.secret_key.clone())),
         screen_config: screen_config.clone(),
         quality_controller: quality_controller.clone(),
         tx_mjpeg,
@@ -290,6 +316,15 @@ async fn main() {
         jiggler: mouse_jiggler.clone(),
         health_state: Arc::new(HealthState::default()),
         passkey_state,
+        brute_force: {
+            let bf = Arc::new(BruteForce::new(config.security.clone()));
+            if let Err(e) = bf.load_state().await {
+                warn!("Failed to load brute force state: {}", e);
+            }
+            BruteForce::spawn_cleanup(&bf);
+            bf
+        },
+        mouse_scroll: crate::hid::mouse_scroll::MouseScrollStore::new(),
     });
 
     // Initialize storage health check on boot (non-blocking)
@@ -301,6 +336,11 @@ async fn main() {
             *cached = Some(health);
         });
     }
+
+    // Re-apply persisted custom EDID on boot (complete parity logic)
+    tokio::spawn(async {
+        crate::vm::edid::load_and_apply_custom_edid_on_boot().await;
+    });
 
     // Spawn Producer Tasks (Linux Only)
     #[cfg(target_os = "linux")]
@@ -340,6 +380,19 @@ async fn main() {
     // 4. Build Router
     #[allow(unused_mut)] // mut needed for cfg(target_os = "linux") blocks
     let mut api_routes = Router::new()
+        // Go parity: account/password/logout require a valid session (or must-change-password JWT for POST password).
+        .route("/auth/account", get(get_account_handler))
+        .route(
+            "/auth/password",
+            get(is_password_updated_handler).post(change_password_handler),
+        )
+        .route("/auth/logout", post(logout_handler))
+        .route("/logout", post(logout_handler))
+        .route("/passkey/setup", post(passkey_setup_handler))
+        .route(
+            "/passkey/setup/recovery-codes",
+            get(setup_recovery_codes_handler),
+        )
         .route("/application/version", get(get_version_handler))
         .route("/application/update", post(update_handler))
         .route("/application/update/offline", post(offline_update_handler))
@@ -392,16 +445,20 @@ async fn main() {
         .route("/hid/paste", post(paste_handler))
         .route("/hid/shortcuts", get(get_shortcuts_handler))
         .route(
+            "/hid/leader-key",
+            get(get_leader_key_handler).post(set_leader_key_handler),
+        )
+        .route(
             "/hid/shortcut",
             post(add_shortcut_handler).delete(delete_shortcut_handler),
         )
         .route(
-            "/hid/shortcut/leader-key",
-            get(get_leader_key_handler).post(set_leader_key_handler),
-        )
-        .route(
             "/hid/mode",
             get(get_hid_mode_handler).post(set_hid_mode_handler),
+        )
+        .route(
+            "/hid/mouse/scroll",
+            get(get_mouse_scroll_handler).post(set_mouse_scroll_handler),
         )
         .route("/hid/reset", post(reset_hid_handler))
         .route(
@@ -452,6 +509,8 @@ async fn main() {
                 "/vm/device/virtual",
                 get(get_virtual_device_handler).post(update_virtual_device_handler),
             )
+            .route("/vm/serial-ports", get(get_serial_ports_handler))
+            .route("/vm/serial/{*port}", get(serial_ws_handler))
             .route("/vm/gpio", get(get_gpio_handler).post(set_gpio_handler))
             .route(
                 "/vm/mouse-jiggler",
@@ -490,6 +549,8 @@ async fn main() {
             .route("/vm/hdmi/enable", post(enable_hdmi_handler))
             .route("/vm/hdmi/disable", post(disable_hdmi_handler))
             .route("/vm/screen", post(set_screen_handler))
+            .route("/vm/edid", get(get_edid_handler).post(set_edid_handler))
+            .route("/vm/edid/default", post(apply_default_edid_handler))
             .route("/vm/reboot", post(reboot_handler))
             // Go frontend expects this path.
             .route("/vm/system/reboot", post(reboot_handler))
@@ -557,20 +618,12 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health_check_handler))
         .route("/api/system/capabilities", get(capabilities_handler))
-        // Auth routes (outside of api_routes so they don't require auth)
+        // Public auth routes (login + pre-login encryption key)
         .route("/api/login", post(login_handler))
-        .route("/api/logout", post(logout_handler))
         .route("/api/auth/login", post(login_handler))
-        .route("/api/auth/account", get(get_account_handler))
         .route("/api/auth/encryption-key", get(get_encryption_key_handler))
-        .route(
-            "/api/auth/password",
-            get(is_password_updated_handler).post(change_password_handler),
-        )
-        .route("/api/auth/logout", post(logout_handler))
-        // Passkey authentication routes (unauthenticated)
+        // Passkey login/recovery/enrollment (setup + recovery download require auth in api_routes)
         .route("/api/passkey/status", get(passkey_status_handler))
-        .route("/api/passkey/setup", post(passkey_setup_handler))
         .route("/api/passkey/enroll", post(enroll_complete_handler))
         .route(
             "/api/passkey/login/challenge",
@@ -578,10 +631,6 @@ async fn main() {
         )
         .route("/api/passkey/login/verify", post(login_verify_handler))
         .route("/api/passkey/recover", post(recover_handler))
-        .route(
-            "/api/passkey/recovery/download",
-            get(recovery_download_handler),
-        )
         .route("/api/passkey/qr", get(qr_code_handler))
         // Connect Wi-Fi without auth (only in AP mode), matching Go backend.
         .route("/api/network/wifi", post(connect_wifi_no_auth_handler))
@@ -637,10 +686,13 @@ async fn main() {
                     "Server listening on {} (HTTP - TLS fallback, TCP_NODELAY enabled)",
                     http_addr
                 );
-                axum::serve(listener, app)
-                    .with_graceful_shutdown(shutdown_signal())
-                    .await
-                    .expect("HTTP server failed");
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+                .expect("HTTP server failed");
                 return;
             }
         };
@@ -683,7 +735,7 @@ async fn main() {
         });
         axum_server::bind_rustls(https_addr, tls_config)
             .handle(handle)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await
             .expect("HTTPS server failed");
     } else {
@@ -695,10 +747,13 @@ async fn main() {
             "Server listening on {} (HTTP, TCP_NODELAY enabled)",
             http_addr
         );
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
-            .await
-            .expect("HTTP server failed");
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("HTTP server failed");
     }
 }
 
@@ -778,7 +833,7 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
     let mut interval = tokio::time::interval(Duration::from_millis(33));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let (width, height, manual_quality, fps, _stream_type) = {
+        let (width, height, manual_quality, fps, stream_type) = {
             let cfg = state.screen_config.read();
             (
                 cfg.width,
@@ -792,11 +847,10 @@ async fn mjpeg_hardware_loop(state: Arc<AppState>) {
         let quality = state.quality_controller.get_mjpeg_quality(manual_quality);
 
         interval.tick().await;
-        // Only read MJPEG when we have MJPEG receivers and NO active H.264 consumers.
-        // H.264 (WebRTC or direct) takes precedence to avoid encoder mode switching.
-        let h264_active =
-            state.webrtc.total_connection_count() > 0 || state.tx_h264.receiver_count() > 0;
-        if state.tx_mjpeg.receiver_count() > 0 && !h264_active {
+        // Only read MJPEG when the configured stream type is MJPEG.
+        // Rationale: stale WebRTC/direct-H.264 sessions can otherwise permanently starve MJPEG
+        // (HTTP handler stays connected, but never receives any frames).
+        if state.tx_mjpeg.receiver_count() > 0 && stream_type == "mjpeg" {
             let kvm_state = state.clone();
             match tokio::task::spawn_blocking(move || {
                 kvm_state.kvm.get_mjpeg(width, height, quality)
@@ -847,7 +901,7 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
     let mut parameter_sets_initialized = false;
 
     loop {
-        let (width, height, manual_bitrate, fps, _stream_type) = {
+        let (width, height, manual_bitrate, fps, stream_type) = {
             let cfg = state.screen_config.read();
             (
                 cfg.width,
@@ -861,6 +915,10 @@ async fn h264_hardware_loop(state: Arc<AppState>) {
         let bitrate = state.quality_controller.get_h264_bitrate(manual_bitrate);
 
         interval.tick().await;
+        // Only capture H.264 when the configured stream type is H.264.
+        if stream_type != "h264" {
+            continue;
+        }
         // Read H.264 when either WebRTC peers are connected OR direct H.264 clients are subscribed.
         // Direct streaming uses `tx_h264` (no WebRTC connections), so we must not gate on WebRTC alone.
         let webrtc_active = state.webrtc.total_connection_count() > 0;
