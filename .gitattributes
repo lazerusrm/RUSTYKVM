@@ -1,0 +1,2 @@
+*.sh text eol=lf
+scripts/S95nanokvm text eol=lf
