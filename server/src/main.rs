@@ -1072,11 +1072,7 @@ async fn handle_h264_direct(mut socket: WebSocket, state: Arc<AppState>) {
         buf.put_u8(if f.is_keyframe { 1 } else { 0 });
         buf.put_u64_le(f.timestamp);
         buf.put_slice(&f.raw_data);
-        if socket
-            .send(Message::Binary(buf.freeze()))
-            .await
-            .is_err()
-        {
+        if socket.send(Message::Binary(buf.freeze())).await.is_err() {
             break;
         }
     }

@@ -83,8 +83,7 @@ impl BruteForce {
                 builder.create(true).write(true).truncate(true);
                 #[cfg(unix)]
                 {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    builder.mode(0o600);
+                    std::os::unix::fs::OpenOptionsExt::mode(&mut builder, 0o600);
                 }
                 match builder.open(&tmp).await {
                     Ok(mut file) => {

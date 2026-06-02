@@ -574,7 +574,6 @@ pub async fn enroll_complete_handler(
 async fn load_passkeys() -> std::io::Result<crate::passkey::models::PasskeyStorage> {
     #[cfg(target_os = "linux")]
     {
-        use std::os::unix::fs::PermissionsExt;
         if let Ok(metadata) = tokio::fs::metadata(PASSKEYS_FILE).await {
             let perms = metadata.permissions();
             #[cfg(unix)]

@@ -131,8 +131,7 @@ impl MouseScrollStore {
             b.truncate(true);
             #[cfg(unix)]
             {
-                use std::os::unix::fs::OpenOptionsExt;
-                b.mode(0o600);
+                std::os::unix::fs::OpenOptionsExt::mode(&mut b, 0o600);
             }
             b
         };
