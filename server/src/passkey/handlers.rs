@@ -698,7 +698,7 @@ pub async fn login_verify_handler(
     headers: HeaderMap,
     Json(req): Json<serde_json::Value>,
 ) -> Response {
-    login_verify_inner(state, headers, req, Some(peer)).await
+    return login_verify_inner(state, headers, req, Some(peer)).await;
 }
 
 #[cfg(not(unix))]
@@ -707,7 +707,7 @@ pub async fn login_verify_handler(
     headers: HeaderMap,
     Json(req): Json<serde_json::Value>,
 ) -> Response {
-    login_verify_inner(state, headers, req, None).await
+    return login_verify_inner(state, headers, req, None).await;
 }
 
 async fn login_verify_inner(

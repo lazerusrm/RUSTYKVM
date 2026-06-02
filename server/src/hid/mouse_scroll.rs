@@ -20,9 +20,12 @@ use axum::{
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::fs::{self, OpenOptions};
+use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 /// File location (consistent with other KVM runtime state: shortcuts, brute force, etc.)
 const MOUSE_SCROLL_FILE: &str = "/etc/kvm/mouse_scroll.json";
@@ -124,13 +127,19 @@ impl MouseScrollStore {
         let tmp = format!("{}.tmp", MOUSE_SCROLL_FILE);
 
         // Create with 0o600 (owner rw only)
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .await?;
+        let builder = {
+            let mut b = tokio::fs::OpenOptions::new();
+            b.create(true);
+            b.write(true);
+            b.truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                b = b.mode(0o600);
+            }
+            b
+        };
+        let mut file = builder.open(&tmp).await?;
 
         file.write_all(json.as_bytes()).await?;
         file.write_all(b"\n").await?;
