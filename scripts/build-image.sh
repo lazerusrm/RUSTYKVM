@@ -1,6 +1,6 @@
 #!/bin/bash
-# NanoKVM-RS SD Card Image Builder
-# Creates a flashable SD card image with the Rust-based NanoKVM server
+# RUSTYKVM SD card image builder
+# Produces a flashable image with the RUSTYKVM platform stack (nanokvm-server + web UI)
 
 set -e
 
@@ -51,8 +51,8 @@ DL_LIB_PATH="$PROJECT_DIR/dl_lib"
 WEB_PATH="$PROJECT_DIR/web"
 INSTALL_SCRIPT="$PROJECT_DIR/scripts/install.sh"
 
-log_info "NanoKVM-RS Image Builder"
-log_info "========================"
+log_info "RUSTYKVM Image Builder"
+log_info "======================"
 
 # Create work directory
 mkdir -p "$WORK_DIR"
@@ -101,14 +101,8 @@ if [ ! -d "$MOUNT_POINT/kvmapp" ]; then
     mkdir -p "$MOUNT_POINT/kvmapp"
 fi
 
-# Backup original Go server
-if [ -f "$MOUNT_POINT/kvmapp/server/NanoKVM-Server" ]; then
-    log_info "Backing up original Go server..."
-    mv "$MOUNT_POINT/kvmapp/server/NanoKVM-Server" "$MOUNT_POINT/kvmapp/server/NanoKVM-Server.go.bak"
-fi
-
-# Install Rust server
-log_info "Installing NanoKVM-RS server..."
+# Install platform HTTP service (this release uses nanokvm-server only)
+log_info "Installing RUSTYKVM server (nanokvm-server)..."
 cp "$BINARY_PATH" "$MOUNT_POINT/kvmapp/nanokvm-server"
 chmod +x "$MOUNT_POINT/kvmapp/nanokvm-server"
 
@@ -134,65 +128,21 @@ elif [ -f "$MOUNT_POINT/etc/ld.so.conf" ]; then
     grep -q "/kvmapp/dl_lib" "$MOUNT_POINT/etc/ld.so.conf" || echo "/kvmapp/dl_lib" >> "$MOUNT_POINT/etc/ld.so.conf"
 fi
 
-# Disable any existing NanoKVM init scripts
+# Disable superseded platform init scripts (keep S95nanokvm for this release)
 for script in "$MOUNT_POINT"/etc/init.d/S*kvm* "$MOUNT_POINT"/etc/init.d/S*NanoKVM*; do
     if [ -f "$script" ] && [ "$script" != "$MOUNT_POINT/etc/init.d/S95nanokvm" ]; then
-        log_info "Disabling original init script: $script"
+        log_info "Disabling superseded init script: $script"
         mv "$script" "${script}.disabled" 2>/dev/null || true
     fi
 done
 
-# Create init script
 INIT_SCRIPT="$MOUNT_POINT/etc/init.d/S95nanokvm"
-log_info "Creating init script..."
-cat > "$INIT_SCRIPT" << 'INITEOF'
-#!/bin/sh
-# NanoKVM-RS init script (hardened)
-export LD_LIBRARY_PATH=/kvmapp/dl_lib:$LD_LIBRARY_PATH
-DAEMON=/kvmapp/nanokvm-server
-PIDFILE=/var/run/nanokvm.pid
-LOGFILE=/var/log/nanokvm.log
-
-is_running() {
-  [ -f "$PIDFILE" ] || return 1
-  PID="$(cat "$PIDFILE" 2>/dev/null)"
-  [ -n "$PID" ] || return 1
-  kill -0 "$PID" 2>/dev/null
-}
-
-case "$1" in
-  start)
-    echo "Starting NanoKVM-RS..."
-    cd /kvmapp
-    start-stop-daemon -S -b -m -p "$PIDFILE" -a "$DAEMON" -- >> "$LOGFILE" 2>&1
-    sleep 1
-    is_running || exit 1
-    ;;
-  stop)
-    if [ -f "$PIDFILE" ]; then
-      start-stop-daemon -K -p "$PIDFILE" -s TERM 2>/dev/null || true
-      for i in 1 2 3 4 5 6 7 8 9 10; do
-        is_running || break
-        sleep 0.5
-      done
-      rm -f "$PIDFILE"
-    fi
-    ;;
-  restart)
-    $0 stop
-    $0 start
-    ;;
-  *)
-    echo "Usage: $0 {start|stop|restart}"
-    exit 1
-    ;;
-esac
-exit 0
-INITEOF
+log_info "Installing platform init script..."
+cp "$SCRIPT_DIR/S95nanokvm" "$INIT_SCRIPT"
 chmod +x "$INIT_SCRIPT"
 
-# Create version marker
-echo "NanoKVM-RS $(date +%Y%m%d)" > "$MOUNT_POINT/kvmapp/.version-rs"
+# Version marker for this release
+echo "RUSTYKVM $(date +%Y%m%d)" > "$MOUNT_POINT/kvmapp/.version-rs"
 
 # Sync and unmount
 log_info "Syncing filesystem..."

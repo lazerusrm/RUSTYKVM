@@ -38,7 +38,7 @@ try {
   $VersionLine = (Get-Content (Join-Path $RepoRoot "server/Cargo.toml") | Select-String -Pattern '^version\s*=' | Select-Object -First 1).Line
   $Version = (($VersionLine -split '\"')[1]).Trim()
 
-  Write-Host "Installing init script + restarting service..."
+  Write-Host "Installing RUSTYKVM init script + restarting service..."
   $InitScript = Join-Path $RepoRoot "scripts/S95nanokvm"
   if (Test-Path $InitScript) {
     scp $InitScript "${SshHost}:/etc/init.d/S95nanokvm.new" | Out-Null
@@ -46,7 +46,6 @@ try {
 
   $remoteCmd =
     'set -e; ' +
-    'killall nanokvm-server 2>/dev/null || true; ' +
     'sleep 1; ' +
     'if [ -f /etc/init.d/S95nanokvm.new ]; then mv -f /etc/init.d/S95nanokvm.new /etc/init.d/S95nanokvm; chmod +x /etc/init.d/S95nanokvm; fi; ' +
     'TS=$(date +%s); ' +
