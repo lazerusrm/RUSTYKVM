@@ -186,7 +186,11 @@ pub async fn get_edid_handler() -> impl IntoResponse {
                     return ok_edid_response(data, true);
                 }
             }
-            Json(ApiResponse::<GetEdidRsp>::err(error_codes::HARDWARE, &hw_err)).into_response()
+            Json(ApiResponse::<GetEdidRsp>::err(
+                error_codes::HARDWARE,
+                &hw_err,
+            ))
+            .into_response()
         }
     }
 }

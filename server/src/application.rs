@@ -152,8 +152,11 @@ pub async fn offline_update_handler(mut multipart: Multipart) -> impl IntoRespon
         Ok(n) => n,
         Err(e) => {
             IS_UPDATING.store(false, Ordering::SeqCst);
-            return Json(ApiResponse::<serde_json::Value>::err(error_codes::VALIDATION, &e))
-                .into_response();
+            return Json(ApiResponse::<serde_json::Value>::err(
+                error_codes::VALIDATION,
+                &e,
+            ))
+            .into_response();
         }
     };
 
@@ -318,7 +321,8 @@ async fn perform_update() -> anyhow::Result<()> {
 }
 
 fn is_safe_tar_entry_path(path: &Path) -> bool {
-    path.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+    path.components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
 fn unpack_archive_safely(archive_path: &Path, extract_dir: &Path) -> anyhow::Result<()> {

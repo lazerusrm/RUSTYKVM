@@ -214,7 +214,8 @@ impl BruteForce {
         if locked {
             Some((
                 error_codes::LOCKED,
-                "Account locked due to too many failed attempts, please try again later".to_string(),
+                "Account locked due to too many failed attempts, please try again later"
+                    .to_string(),
             ))
         } else {
             None

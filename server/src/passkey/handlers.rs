@@ -1,15 +1,15 @@
+#[cfg(unix)]
+use axum::extract::ConnectInfo;
 use axum::{
     extract::{Json, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-#[cfg(unix)]
-use axum::extract::ConnectInfo;
-use std::net::SocketAddr;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::process::Command;
@@ -116,11 +116,11 @@ fn verify_webauthn_client_data(
     rp_id: &str,
     expected_type: &str,
 ) -> bool {
-    let map: serde_json::Map<String, serde_json::Value> = match serde_json::from_str(client_data_json)
-    {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
+    let map: serde_json::Map<String, serde_json::Value> =
+        match serde_json::from_str(client_data_json) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
     let challenge_b64 = match map.get("challenge").and_then(|v| v.as_str()) {
         Some(c) => c,
         None => return false,
@@ -140,16 +140,8 @@ fn verify_webauthn_client_data(
     origin == expected_origin
 }
 
-fn passkey_client_ip(
-    state: &AppState,
-    headers: &HeaderMap,
-    peer: Option<SocketAddr>,
-) -> String {
-    client_ip(
-        headers,
-        peer,
-        state.config.security.trust_forwarded_headers,
-    )
+fn passkey_client_ip(state: &AppState, headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
+    client_ip(headers, peer, state.config.security.trust_forwarded_headers)
 }
 
 fn passkey_verify_fail(error: impl Into<String>) -> Response {
@@ -592,7 +584,10 @@ async fn load_passkeys() -> std::io::Result<crate::passkey::models::PasskeyStora
             {
                 use std::os::unix::fs::PermissionsExt;
                 if perms.mode() & 0o777 != 0o600 {
-                    warn!("Passkeys file has incorrect permissions: {:o}", perms.mode());
+                    warn!(
+                        "Passkeys file has incorrect permissions: {:o}",
+                        perms.mode()
+                    );
                 }
             }
         }

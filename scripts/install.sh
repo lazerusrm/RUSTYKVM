@@ -69,6 +69,12 @@ log_info "Installing nanokvm-server binary..."
 cp "$SCRIPT_DIR/nanokvm-server" "$INSTALL_DIR/nanokvm-server"
 chmod +x "$INSTALL_DIR/nanokvm-server"
 
+if [ -f "$SCRIPT_DIR/RELEASE_VERSION" ]; then
+    cp "$SCRIPT_DIR/RELEASE_VERSION" "$INSTALL_DIR/version"
+elif [ -n "${NANOKVM_RELEASE_VERSION:-}" ]; then
+    echo "$NANOKVM_RELEASE_VERSION" > "$INSTALL_DIR/version"
+fi
+
 # Install proprietary libraries
 if [ -d "$SCRIPT_DIR/dl_lib" ]; then
     log_info "Installing hardware libraries..."

@@ -195,7 +195,10 @@ fn detect_chip_version() -> Result<ChipVersion, String> {
         "c" => Ok(ChipVersion::Lt6911C),
         "ux" => Ok(ChipVersion::Lt6911Uxc),
         "ue" => Err("UE chip version does not support EDID updates".to_string()),
-        other => Err(format!("Unknown chip version in {}: {}", VERSION_PATH, other)),
+        other => Err(format!(
+            "Unknown chip version in {}: {}",
+            VERSION_PATH, other
+        )),
     }
 }
 

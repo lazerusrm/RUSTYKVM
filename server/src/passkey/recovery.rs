@@ -53,7 +53,8 @@ async fn save_rate_limit_state() {
         let _ = fs::write(RATE_LIMIT_FILE, json).await;
         #[cfg(target_os = "linux")]
         {
-            let _ = fs::set_permissions(RATE_LIMIT_FILE, std::fs::Permissions::from_mode(0o600)).await;
+            let _ =
+                fs::set_permissions(RATE_LIMIT_FILE, std::fs::Permissions::from_mode(0o600)).await;
         }
     }
 }
@@ -191,7 +192,9 @@ pub async fn validate_and_consume_code(
         let wait_time = store
             .by_ip
             .get(client_ip)
-            .map(|entry| RATE_LIMIT_WINDOW_SECONDS.saturating_sub(now.saturating_sub(entry.last_attempt)))
+            .map(|entry| {
+                RATE_LIMIT_WINDOW_SECONDS.saturating_sub(now.saturating_sub(entry.last_attempt))
+            })
             .unwrap_or(0);
         return Err(format!(
             "Too many attempts. Please wait {} seconds.",

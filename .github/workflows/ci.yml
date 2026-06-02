@@ -162,44 +162,9 @@ jobs:
           cp binary/nanokvm-server package/nanokvm-server
           chmod +x package/nanokvm-server
           cp scripts/S95nanokvm package/S95nanokvm
-
-          # Create simple install script
-          cat > package/install.sh << 'INSTALL'
-          #!/bin/sh
-          set -e
-          echo "Installing NanoKVM-RS..."
-
-          # When invoked by the in-device auto-updater, skipping service control is required:
-          # stopping the service here would kill the updater process mid-install.
-          if [ "${NANOKVM_SKIP_SERVICE:-0}" != "1" ]; then
-            /etc/init.d/S95nanokvm stop 2>/dev/null || true
-          fi
-
-          # Backup original
-          if [ -f /kvmapp/nanokvm-server ]; then
-            cp /kvmapp/nanokvm-server /kvmapp/nanokvm-server.bak
-          fi
-
-          # Install new binary
-          cp nanokvm-server /kvmapp/nanokvm-server.new
-          chmod +x /kvmapp/nanokvm-server.new
-          mv -f /kvmapp/nanokvm-server.new /kvmapp/nanokvm-server
-
-          # Install init script (hardened)
-          cp S95nanokvm /etc/init.d/S95nanokvm
-          chmod +x /etc/init.d/S95nanokvm
-
-          # Record version for /api/application/version
-          echo "__VERSION__" > /kvmapp/version
-
-          if [ "${NANOKVM_SKIP_SERVICE:-0}" != "1" ]; then
-            /etc/init.d/S95nanokvm start
-          fi
-
-          echo "Done! NanoKVM-RS installed."
-          INSTALL
-          sed -i "s/__VERSION__/${VERSION}/g" package/install.sh
+          cp scripts/install.sh package/install.sh
           chmod +x package/install.sh
+          echo "${VERSION}" > package/RELEASE_VERSION
 
           cd package
           tar -czvf ../nanokvm-rs-${VERSION}-upgrade.tar.gz .

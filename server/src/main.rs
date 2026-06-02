@@ -10,9 +10,9 @@ mod quality;
 mod storage;
 mod storage_health;
 mod tailscale;
+mod url_safety;
 mod utils;
 mod vm;
-mod url_safety;
 mod webrtc;
 
 use crate::api::ApiResponse;

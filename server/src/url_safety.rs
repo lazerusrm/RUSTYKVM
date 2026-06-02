@@ -39,9 +39,7 @@ pub async fn validate_remote_http_url(url_str: &str) -> Result<Url, String> {
             for addr in addrs {
                 resolved_any = true;
                 if is_blocked_ip(addr.ip()) {
-                    return Err(
-                        "hostname resolves to a private or reserved address".to_string(),
-                    );
+                    return Err("hostname resolves to a private or reserved address".to_string());
                 }
             }
         }

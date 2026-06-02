@@ -6,16 +6,16 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use std::net::SocketAddr;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 static X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 static X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
 use crate::api::ApiResponse;
-use crate::utils::{decrypt_password, get_secret_key};
 use crate::config::Config;
+use crate::utils::{decrypt_password, get_secret_key};
 use crate::AppState;
 use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::Utc;
@@ -156,11 +156,7 @@ async fn save_account(account: &Account) -> anyhow::Result<()> {
 
 /// Resolve client IP for brute-force tracking.
 /// Default: socket peer only. Forwarded headers are honored only when `trustForwardedHeaders` is set in config.
-pub fn client_ip(
-    headers: &HeaderMap,
-    peer: Option<SocketAddr>,
-    trust_forwarded: bool,
-) -> String {
+pub fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, trust_forwarded: bool) -> String {
     if trust_forwarded {
         if let Some(h) = headers.get(&X_FORWARDED_FOR).and_then(|h| h.to_str().ok()) {
             if let Some(ip) = h.split(',').next().map(str::trim).filter(|s| !s.is_empty()) {
@@ -400,7 +396,12 @@ pub async fn change_password_handler(
     Json(req): Json<ChangePasswordReq>,
 ) -> impl IntoResponse {
     let account = get_account().await;
-    if req.username.as_bytes().ct_ne(account.username.as_bytes()).into() {
+    if req
+        .username
+        .as_bytes()
+        .ct_ne(account.username.as_bytes())
+        .into()
+    {
         return Json(ApiResponse::<()>::err(
             crate::api::error_codes::AUTH,
             "Invalid username",
@@ -532,7 +533,8 @@ pub async fn auth_middleware(
             &DecodingKey::from_secret(signing_key.as_bytes()),
             &validation,
         ) {
-            if !data.claims.requires_password_change || allows_during_password_change(req.uri().path())
+            if !data.claims.requires_password_change
+                || allows_during_password_change(req.uri().path())
             {
                 return next.run(req).await;
             }
